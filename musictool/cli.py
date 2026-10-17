@@ -16,6 +16,7 @@ def main(argv: list[str] | None = None) -> int:
     serve = argparse.ArgumentParser(prog="musictool serve", description="Start the web app.")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
+    serve.add_argument("--open", action="store_true", help="open the app in the default browser")
 
     parser.add_argument("input", nargs="?", help="audio file (wav, mp3, flac, ogg, aiff, ...)")
     parser.add_argument("-o", "--output", help="output .mid path (default: next to input)")
@@ -40,6 +41,13 @@ def main(argv: list[str] | None = None) -> int:
         args = serve.parse_args(argv[1:])
         import uvicorn
 
+        if args.open:
+            import threading
+            import webbrowser
+
+            url = f"http://{'127.0.0.1' if args.host in ('0.0.0.0', '::') else args.host}:{args.port}"
+            threading.Timer(1.5, webbrowser.open, [url]).start()
+            print(f"MusicTool running at {url} (press Ctrl+C to stop)")
         uvicorn.run("musictool.web.app:app", host=args.host, port=args.port)
         return 0
 

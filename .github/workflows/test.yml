@@ -1,0 +1,43 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install (Windows, via install.bat)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: install.bat
+
+      - name: Install (Linux)
+        if: runner.os != 'Windows'
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --no-deps basic-pitch
+          .venv/bin/python -m pip install -e . resampy mir_eval scikit-learn
+
+      - name: Test (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          .venv\Scripts\python.exe -m pip install pytest httpx
+          .venv\Scripts\python.exe -m pytest -v
+
+      - name: Test (Linux)
+        if: runner.os != 'Windows'
+        run: |
+          .venv/bin/python -m pip install pytest httpx
+          .venv/bin/python -m pytest -v

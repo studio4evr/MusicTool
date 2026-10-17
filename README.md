@@ -19,7 +19,23 @@ ready to drag into Ableton, FL Studio, Logic, Bitwig, and so on.
 | Quantisation | Grid phase is estimated from the drum hits, then notes snap to 1/8, 1/16 or 1/32 |
 | Clean-up | Fragmented sustained notes are merged, and octave bleed from the bass is removed from the synth track |
 
-## Install
+## Windows quick start
+
+1. Install **Python 3.12** from <https://www.python.org/downloads/windows/>.
+   In the installer, tick **"Add python.exe to PATH"**.
+2. Download this repository (green **Code** button → **Download ZIP**) and unzip it.
+3. Double-click **`install.bat`**. It sets everything up in a `.venv` folder,
+   which takes a few minutes the first time.
+4. Double-click **`start.bat`**. MusicTool opens in your browser. Close the
+   black window, or press Ctrl+C in it, to stop the app.
+
+You can also **drag audio files onto `transcribe.bat`**. It writes a `.mid` file,
+plus one per track, next to each audio file without opening the browser.
+
+If Windows SmartScreen warns about the `.bat` files, click *More info → Run anyway*.
+They only create the `.venv` folder and install Python packages into it.
+
+## Install (macOS / Linux / manual)
 
 Requires Python 3.10+.
 
@@ -38,7 +54,7 @@ pip install demucs
 **Web app**
 
 ```bash
-musictool serve            # open http://127.0.0.1:8000
+musictool serve --open     # http://127.0.0.1:8000
 ```
 
 Upload a file, tweak the options, and watch progress. You can then preview the
