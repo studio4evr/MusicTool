@@ -1,0 +1,14 @@
+# basic-pitch pins TensorFlow and old numpy on Linux; we only need its ONNX
+# model, so install it without deps:  pip install --no-deps basic-pitch
+numpy
+scipy
+librosa>=0.10
+resampy
+mir_eval
+scikit-learn
+soundfile
+pretty_midi
+onnxruntime
+fastapi
+uvicorn
+python-multipart

@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "musictool"
+version = "0.1.0"
+description = "AI transcription of electronic music audio into multi-track MIDI"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+    "librosa>=0.10",
+    "soundfile",
+    "pretty_midi",
+    "onnxruntime",
+    "fastapi",
+    "uvicorn",
+    "python-multipart",
+]
+
+[project.optional-dependencies]
+stems = ["demucs"]
+dev = ["pytest", "httpx"]
+
+[project.scripts]
+musictool = "musictool.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["musictool*"]
+
+[tool.setuptools.package-data]
+"musictool.web" = ["static/*"]
