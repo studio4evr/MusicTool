@@ -35,12 +35,18 @@ function pickFile(file) {
   $("go").disabled = false;
 }
 
-$("onset_threshold").addEventListener("input", (e) => ($("onset_out").textContent = Number(e.target.value).toFixed(2)));
+// Untouched = "auto": the server uses thresholds tuned per stem.
+let noteSensitivityTouched = false;
+$("onset_out").textContent = "auto";
+$("onset_threshold").addEventListener("input", (e) => {
+  noteSensitivityTouched = true;
+  $("onset_out").textContent = Number(e.target.value).toFixed(2);
+});
 $("drum_sensitivity").addEventListener("input", (e) => ($("drum_out").textContent = Number(e.target.value).toFixed(2)));
 
 const ENGINE_LABELS = {
   "demucs-ft": "Demucs v4 fine-tuned", demucs: "Demucs v4", hpss: "DSP separation",
-  adtof: "ADTOF drums", dsp: "DSP drums", crepe: "CREPE bass", pyin: "pYIN bass",
+  ensemble: "DrumSep + ADTOF drums", drumsep: "DrumSep drums", adtof: "ADTOF drums", dsp: "DSP drums", crepe: "CREPE bass", pyin: "pYIN bass",
   "basic-pitch": "Basic Pitch",
 };
 
@@ -69,11 +75,12 @@ $("go").addEventListener("click", async () => {
 
   const form = new FormData();
   form.append("file", selectedFile);
-  for (const id of ["separation", "drum_engine", "mono_engine", "quantize", "min_note_ms", "drum_sensitivity"]) {
+  for (const id of ["separation", "drum_engine", "mono_engine", "quantize", "drum_sensitivity"]) {
     form.append(id, $(id).value);
   }
+  if ($("min_note_ms").value) form.append("min_note_ms", $("min_note_ms").value);
   // The slider is "sensitivity"; Basic Pitch wants a confidence threshold.
-  form.append("onset_threshold", (1 - Number($("onset_threshold").value)).toFixed(2));
+  if (noteSensitivityTouched) form.append("onset_threshold", (1 - Number($("onset_threshold").value)).toFixed(2));
   if ($("bpm").value) form.append("bpm", $("bpm").value);
   for (const id of ["drums", "bass", "melodic"]) form.append(id, $(id).checked);
 

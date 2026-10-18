@@ -32,10 +32,11 @@ CONFIGS = {
     "baseline (hpss/dsp/pyin)": dict(separation="hpss", drum_engine="dsp", mono_engine="pyin"),
     "demucs + dsp/pyin": dict(separation="demucs-ft", drum_engine="dsp", mono_engine="pyin"),
     "demucs + adtof/pyin": dict(separation="demucs-ft", drum_engine="adtof", mono_engine="pyin"),
-    "demucs + adtof/crepe (new default)": dict(separation="demucs-ft", drum_engine="adtof", mono_engine="crepe"),
-    "hpss + adtof/crepe": dict(separation="hpss", drum_engine="adtof", mono_engine="crepe"),
+    "demucs + adtof/crepe": dict(separation="demucs-ft", drum_engine="adtof", mono_engine="crepe"),
+    "demucs + drumsep/basic-pitch": dict(separation="demucs-ft", drum_engine="drumsep", mono_engine="basic-pitch"),
+    "default: demucs + ensemble/basic-pitch": dict(separation="demucs-ft", drum_engine="ensemble", mono_engine="basic-pitch"),
 }
-QUICK = ["baseline (hpss/dsp/pyin)", "demucs + adtof/crepe (new default)"]
+QUICK = ["baseline (hpss/dsp/pyin)", "default: demucs + ensemble/basic-pitch"]
 
 
 def note_f1(ref, est):

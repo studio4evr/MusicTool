@@ -24,8 +24,10 @@ dependencies = [
 [project.optional-dependencies]
 cpu = ["onnxruntime"]
 gpu = [
-    "onnxruntime-gpu",
-    "audio-separator[gpu]>=0.47",
+    # CPU onnxruntime on purpose: only Basic Pitch (tiny) uses ONNX; Demucs and DrumSep run on
+    # PyTorch/CUDA. onnxruntime-gpu 1.31 targets CUDA 13 and spams DLL errors next to cu128 torch.
+    "onnxruntime",
+    "audio-separator[cpu]>=0.47",
     "audioread",  # audio-separator imports it; librosa 1.0 no longer pulls it in
     "torchcrepe",
     # pinned commit, as a zip so git isn't required

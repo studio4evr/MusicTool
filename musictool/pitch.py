@@ -110,6 +110,7 @@ def transcribe_monophonic(
     min_note_ms: float = 80.0,
     hop_length: int = 256,
     engine: str = "pyin",
+    voicing_threshold: float = 0.5,  # CREPE periodicity needed to count a frame as a note
 ) -> list[Note]:
     """Transcribe a single-voice line (bass, vocal) with an f0 tracker.
 
@@ -130,7 +131,7 @@ def transcribe_monophonic(
     n_frames = 1 + len(y) // hop_length
 
     if engine == "crepe":
-        midi = _crepe_midi(y, sr, min_freq, max_freq, n_frames, hop_length / sr)
+        midi = _crepe_midi(y, sr, min_freq, max_freq, n_frames, hop_length / sr, voicing_threshold)
     elif engine == "pyin":
         f0, voiced, _ = librosa.pyin(
             y, fmin=min_freq, fmax=max_freq, sr=sr, frame_length=2048, hop_length=hop_length

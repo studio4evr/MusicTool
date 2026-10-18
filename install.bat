@@ -46,8 +46,8 @@ set "TORCH_INDEX=https://download.pytorch.org/whl/cu128"
 rem Pin the CUDA build so later packages can't swap in the CPU-only torch from PyPI.
 set "CONSTRAINTS=%TEMP%\musictool-torch-constraints.txt"
 "%VPY%" -c "import torch, torchaudio; print('torch==' + torch.__version__); print('torchaudio==' + torchaudio.__version__)" > "%CONSTRAINTS%" || goto :fail
-rem onnxruntime and onnxruntime-gpu overwrite each other; keep only the GPU one.
-"%VPY%" -m pip uninstall -y onnxruntime >nul 2>&1
+rem Older installs used onnxruntime-gpu, which overwrites onnxruntime; remove it.
+"%VPY%" -m pip uninstall -y onnxruntime-gpu >nul 2>&1
 "%VPY%" -m pip install -e ".[gpu]" resampy mir_eval scikit-learn -c "%CONSTRAINTS%" --extra-index-url %TORCH_INDEX% || goto :fail
 "%VPY%" -c "import torch; print('CUDA available:', torch.cuda.is_available())"
 goto :done

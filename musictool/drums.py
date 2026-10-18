@@ -172,3 +172,86 @@ def transcribe_drums_adtof(y: np.ndarray, sr: int, sensitivity: float = 0.5) -> 
             notes.append(Note(float(t), float(t) + 0.1, pitch, velocity))
     notes.sort(key=lambda n: (n.start, n.pitch))
     return notes
+
+
+# --- Drum-kit separation (DrumSep) ------------------------------------------
+
+DRUMSEP_MODEL = "MDX23C-DrumSep-aufr33-jarredou.ckpt"
+RIDE, CRASH, TOMS = 51, 49, 47
+DRUMSEP_PITCH = {"kick": KICK, "snare": SNARE, "toms": TOMS, "hh": CLOSED_HAT, "ride": RIDE, "crash": CRASH}
+
+
+def drumsep_available() -> bool:
+    from .separation import neural_available
+
+    return neural_available()
+
+
+def _local_peaks(y: np.ndarray, times: np.ndarray, sr: int, win: float = 0.04) -> np.ndarray:
+    n = int(win * sr)
+    return np.array([np.abs(y[int(t * sr): int(t * sr) + n]).max(initial=0.0) for t in times])
+
+
+def transcribe_drums_drumsep(y: np.ndarray, sr: int, sensitivity: float = 0.5) -> list[Note]:
+    """Split the drum stem into kick / snare / toms / hi-hat / ride / crash with
+    MDX23C DrumSep (aufr33 & jarredou), then detect onsets on each piece.
+
+    Class comes from *which stem* a hit lands in, so it doesn't depend on the
+    kit sounding acoustic (ADTOF misses many electronic snares). A hit only
+    counts if that stem carries a real share of the drum stem's level at that
+    moment, which rejects bleed between the separated pieces.
+    """
+    if np.max(np.abs(y)) < 1e-4:
+        return []
+    from .separation import NEURAL_SR, run_model
+
+    if sr != NEURAL_SR:
+        y, sr = librosa.resample(y, orig_sr=sr, target_sr=NEURAL_SR), NEURAL_SR
+    parts = run_model(DRUMSEP_MODEL, y)
+
+    # sensitivity 0.5 -> a piece must reach 22% of the drum stem's local peak
+    share = float(np.interp(sensitivity, [0.0, 0.5, 1.0], [0.4, 0.22, 0.1]))
+    notes: list[Note] = []
+    for name, part in parts.items():
+        pitch = DRUMSEP_PITCH.get(name)
+        if pitch is None or np.max(np.abs(part)) < 1e-4:
+            continue
+        env = librosa.onset.onset_strength(y=part, sr=sr, hop_length=256)
+        times = librosa.onset.onset_detect(onset_envelope=env, sr=sr, hop_length=256, units="time", backtrack=False)
+        if not len(times):
+            continue
+        peak = _local_peaks(part, times, sr)
+        total = _local_peaks(y, times, sr) + 1e-9
+        keep = (peak / total >= share) & (peak >= 0.05 * np.percentile(peak, 95))
+        ref = np.percentile(peak[keep], 95) if keep.any() else 1.0
+        hop_s = 256 / sr
+        if name == "hh":
+            hh_env = librosa.feature.rms(y=part, frame_length=1024, hop_length=256)[0]
+        for t, p, k in zip(times, peak, keep):
+            if not k:
+                continue
+            note_pitch = pitch
+            if name == "hh" and _decay_time(hh_env, int(t / hop_s), hop_s) > 0.14:
+                note_pitch = OPEN_HAT
+            velocity = int(np.clip(30 + 97 * min(1.0, p / ref), 1, 127))
+            notes.append(Note(float(t), float(t) + 0.1, note_pitch, velocity))
+    notes.sort(key=lambda n: (n.start, n.pitch))
+    return notes
+
+
+_GROUP = {KICK: "kick", SNARE: "snare", CLOSED_HAT: "hat", OPEN_HAT: "hat", TOMS: "toms", CRASH: "cym", RIDE: "cym"}
+
+
+def transcribe_drums_ensemble(y: np.ndarray, sr: int, sensitivity: float = 0.5) -> list[Note]:
+    """DrumSep hits, plus any ADTOF hit DrumSep has no same-instrument hit for (+-30 ms).
+
+    On bench/ the union beats both (snare 0.94, hats 0.93); on a real Aphex Twin
+    track it catches ~2x ADTOF's snares at full hit recall.
+    """
+    base = transcribe_drums_drumsep(y, sr, sensitivity)
+    extra = [
+        n
+        for n in transcribe_drums_adtof(y, sr, sensitivity)
+        if not any(_GROUP.get(m.pitch) == _GROUP.get(n.pitch) and abs(m.start - n.start) <= 0.03 for m in base)
+    ]
+    return sorted(base + extra, key=lambda n: (n.start, n.pitch))

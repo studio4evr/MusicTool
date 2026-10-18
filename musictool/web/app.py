@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from ..drums import adtof_available
 from ..gpu import device
-from ..pipeline import TranscriptionOptions, TranscriptionResult, resolve_engines, transcribe
+from ..pipeline import DRUM_ENGINES, TranscriptionOptions, TranscriptionResult, resolve_engines, transcribe
 from ..pitch import crepe_available
 from ..separation import NEURAL_MODELS, neural_available
 
@@ -92,9 +92,9 @@ async def create_job(
     drums: bool = Form(True),
     bass: bool = Form(True),
     melodic: bool = Form(True),
-    onset_threshold: float = Form(0.5),
-    frame_threshold: float = Form(0.3),
-    min_note_ms: float = Form(80.0),
+    onset_threshold: float | None = Form(None),
+    frame_threshold: float | None = Form(None),
+    min_note_ms: float | None = Form(None),
     drum_sensitivity: float = Form(0.5),
 ) -> dict:
     _cleanup_old_jobs()
@@ -105,10 +105,12 @@ async def create_job(
         raise HTTPException(400, f"separation must be one of: auto, hpss, {', '.join(NEURAL_MODELS)}")
     if separation in NEURAL_MODELS and not neural_available():
         raise HTTPException(400, "Neural separation is not installed on the server (run install.bat with GPU support)")
-    if drum_engine not in ("auto", "adtof", "dsp"):
-        raise HTTPException(400, "drum_engine must be 'auto', 'adtof' or 'dsp'")
-    if drum_engine == "adtof" and not adtof_available():
+    if drum_engine not in ("auto", *DRUM_ENGINES):
+        raise HTTPException(400, f"drum_engine must be one of: auto, {', '.join(DRUM_ENGINES)}")
+    if drum_engine in ("ensemble", "adtof") and not adtof_available():
         raise HTTPException(400, "ADTOF is not installed on the server")
+    if drum_engine in ("ensemble", "drumsep") and not neural_available():
+        raise HTTPException(400, "DrumSep needs the GPU extras (run install.bat)")
     if mono_engine not in ("auto", "crepe", "pyin", "basic-pitch"):
         raise HTTPException(400, "mono_engine must be 'auto', 'crepe', 'pyin' or 'basic-pitch'")
     if mono_engine == "crepe" and not crepe_available():

@@ -7,10 +7,16 @@ from typing import Callable
 import pretty_midi
 
 from .audio import load_audio
-from .drums import adtof_available, transcribe_drums, transcribe_drums_adtof
+from .drums import (
+    adtof_available,
+    drumsep_available,
+    transcribe_drums,
+    transcribe_drums_adtof,
+    transcribe_drums_drumsep,
+    transcribe_drums_ensemble,
+)
 from .notes import Note
 from .pitch import (
-    crepe_available,
     make_monophonic,
     merge_fragments,
     remove_octave_bleed,
@@ -27,27 +33,51 @@ ProgressFn = Callable[[str, float], None]
 class TranscriptionOptions:
     # "auto" picks the best engine that is installed; see resolve_engines().
     separation: str = "auto"  # "auto", "hpss", or a neural model key from separation.NEURAL_MODELS
-    drum_engine: str = "auto"  # "auto", "adtof" (neural) or "dsp"
+    drum_engine: str = "auto"  # "auto", "ensemble", "drumsep", "adtof" (neural) or "dsp"
     mono_engine: str = "auto"  # bass/vocal lines: "auto", "crepe" (neural), "pyin" or "basic-pitch"
     bpm: float | None = None  # None = detect automatically
     quantize: int | None = 16  # grid division, None/0 = off
     drums: bool = True
     bass: bool = True
     melodic: bool = True
-    onset_threshold: float = 0.5  # Basic Pitch note onset confidence
-    frame_threshold: float = 0.3  # Basic Pitch note sustain confidence
-    min_note_ms: float = 80.0
+    # None = the tuned per-stem defaults in PROFILES; set a value to override every stem.
+    onset_threshold: float | None = None  # Basic Pitch note onset confidence
+    frame_threshold: float | None = None  # Basic Pitch note sustain confidence
+    min_note_ms: float | None = None
     drum_sensitivity: float = 0.5
     stems_dir: Path | None = None  # if set, the separated stems are written here as WAV
 
 
+DRUM_ENGINES = {
+    "ensemble": ("DrumSep + ADTOF", transcribe_drums_ensemble),
+    "drumsep": ("DrumSep", transcribe_drums_drumsep),
+    "adtof": ("ADTOF neural net", transcribe_drums_adtof),
+    "dsp": ("DSP", transcribe_drums),
+}
+
+
+def _best_drum_engine() -> str:
+    if drumsep_available() and adtof_available():
+        return "ensemble"
+    if drumsep_available():
+        return "drumsep"
+    return "adtof" if adtof_available() else "dsp"
+
+
 def resolve_engines(opts: TranscriptionOptions) -> TranscriptionOptions:
     """Replace every "auto" with the best engine available on this machine."""
+    separation = best_separation() if opts.separation == "auto" else opts.separation
+    if opts.mono_engine != "auto":
+        mono = opts.mono_engine
+    elif separation != "hpss":
+        mono = "basic-pitch"  # on clean Demucs bass stems it beats CREPE (bench F1 0.85 vs 0.68)
+    else:
+        mono = "pyin"  # Basic Pitch makes octave errors on HPSS's leaky low end
     return replace(
         opts,
-        separation=best_separation() if opts.separation == "auto" else opts.separation,
-        drum_engine=("adtof" if adtof_available() else "dsp") if opts.drum_engine == "auto" else opts.drum_engine,
-        mono_engine=("crepe" if crepe_available() else "pyin") if opts.mono_engine == "auto" else opts.mono_engine,
+        separation=separation,
+        drum_engine=_best_drum_engine() if opts.drum_engine == "auto" else opts.drum_engine,
+        mono_engine=mono,
     )
 
 
@@ -99,11 +129,36 @@ class TranscriptionResult:
         }
 
 
-# Track name -> (GM program, is_drum, Basic Pitch frequency range, monophonic)
-PITCHED_STEMS = {
-    "bass": ("Bass", 38, (27.5, 220.0), True),  # Synth Bass 1
-    "melodic": ("Synths", 81, (110.0, None), False),  # Lead 2 (sawtooth)
-    "vocals": ("Vocals", 54, (70.0, 1100.0), True),  # Synth Voice
+@dataclass(frozen=True)
+class StemProfile:
+    name: str
+    program: int  # GM program
+    fmin: float
+    fmax: float | None
+    mono: bool
+    onset: float = 0.5  # Basic Pitch thresholds
+    frame: float = 0.3
+    min_note_ms: float = 80.0
+
+
+# Tuned with bench/benchmark.py (ground truth) + bench/realtrack.py (a real Aphex Twin track).
+PROFILES = {
+    # Clean neural stems. Synths go down to 55 Hz (110 Hz dropped half of the real track's
+    # synth parts) with looser thresholds: real-track synth coverage 0.50 -> 0.94, bench F1
+    # unchanged. The vocal stem is transcribed polyphonically: on instrumental electronic
+    # music it mostly holds synth leads. Bass via Basic Pitch with 50 ms notes: bench F1
+    # 0.85 vs 0.68 for CREPE, same real-track coverage.
+    "neural": {
+        "bass": StemProfile("Bass", 38, 27.5, 220.0, True, min_note_ms=50.0),
+        "melodic": StemProfile("Synths", 81, 55.0, None, False, onset=0.4, frame=0.25),
+        "vocals": StemProfile("Vocals", 54, 55.0, None, False, onset=0.4, frame=0.25),
+    },
+    # HPSS leaks bass harmonics upwards, so synths stay above 110 Hz.
+    "dsp": {
+        "bass": StemProfile("Bass", 38, 27.5, 220.0, True),
+        "melodic": StemProfile("Synths", 81, 110.0, None, False),
+        "vocals": StemProfile("Vocals", 54, 70.0, 1100.0, True),
+    },
 }
 
 
@@ -132,39 +187,38 @@ def transcribe(path, options: TranscriptionOptions | None = None, progress: Prog
 
     tracks: list[Track] = []
     if opts.drums and "drums" in stems:
-        if opts.drum_engine == "adtof":
-            report("Transcribing drums (ADTOF neural net)", 0.45)
-            drum_notes = transcribe_drums_adtof(stems["drums"], stem_sr, opts.drum_sensitivity)
-        else:
-            report("Transcribing drums", 0.45)
-            drum_notes = transcribe_drums(stems["drums"], stem_sr, opts.drum_sensitivity)
-        tracks.append(Track("Drums", 0, True, drum_notes))
+        label, drum_fn = DRUM_ENGINES[opts.drum_engine]
+        report(f"Transcribing drums ({label})", 0.4)
+        tracks.append(Track("Drums", 0, True, drum_fn(stems["drums"], stem_sr, opts.drum_sensitivity)))
 
-    wanted = [k for k in PITCHED_STEMS if k in stems and (k != "bass" or opts.bass) and (k == "bass" or opts.melodic)]
+    profiles = PROFILES["neural" if neural else "dsp"]
+    wanted = [k for k in profiles if k in stems and (k != "bass" or opts.bass) and (k == "bass" or opts.melodic)]
     for i, key in enumerate(wanted):
-        name, program, (fmin, fmax), mono = PITCHED_STEMS[key]
+        p = profiles[key]
         frac = 0.55 + 0.4 * i / len(wanted)
-        if mono and opts.mono_engine in ("pyin", "crepe"):
+        min_ms = opts.min_note_ms if opts.min_note_ms is not None else p.min_note_ms
+        if p.mono and opts.mono_engine in ("pyin", "crepe"):
             label = "CREPE neural net" if opts.mono_engine == "crepe" else "pYIN"
-            report(f"Transcribing {name.lower()} ({label})", frac)
+            report(f"Transcribing {p.name.lower()} ({label})", frac)
             notes = transcribe_monophonic(
-                stems[key], stem_sr, min_freq=fmin, max_freq=fmax, min_note_ms=opts.min_note_ms, engine=opts.mono_engine
+                stems[key], stem_sr, min_freq=p.fmin, max_freq=p.fmax, min_note_ms=min_ms, engine=opts.mono_engine
             )
         else:
-            report(f"Transcribing {name.lower()} (Basic Pitch neural net)", frac)
+            report(f"Transcribing {p.name.lower()} (Basic Pitch neural net)", frac)
             notes = transcribe_pitched(
                 stems[key],
                 stem_sr,
-                onset_threshold=opts.onset_threshold,
-                frame_threshold=opts.frame_threshold,
-                min_note_ms=opts.min_note_ms,
-                min_freq=fmin,
-                max_freq=fmax or None,
-                monophonic=mono,
+                onset_threshold=opts.onset_threshold if opts.onset_threshold is not None else p.onset,
+                frame_threshold=opts.frame_threshold if opts.frame_threshold is not None else p.frame,
+                min_note_ms=min_ms,
+                min_freq=p.fmin,
+                max_freq=p.fmax,
+                monophonic=p.mono,
             )
-        if not mono:
+        if not p.mono:
             notes = merge_fragments(notes)
-        tracks.append(Track(name, program, False, notes))
+        tracks.append(Track(p.name, p.program, False, notes))
+    mono_tracks = {p.name for p in profiles.values() if p.mono}
 
     bass_track = next((t for t in tracks if t.name == "Bass"), None)
     if bass_track is not None and not neural:  # neural stems don't leak bass harmonics
@@ -180,7 +234,7 @@ def transcribe(path, options: TranscriptionOptions | None = None, progress: Prog
         phase = grid_phase(onsets, step) if onsets else first_beat
         for track in tracks:
             track.notes = quantize(track.notes, bpm, opts.quantize, phase)
-            if track.name in ("Bass", "Vocals"):
+            if track.name in mono_tracks:
                 track.notes = make_monophonic(track.notes)
 
     report("Done", 1.0)

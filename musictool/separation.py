@@ -14,11 +14,13 @@ import contextlib
 import io
 import logging
 import os
+import re
 import tempfile
 from pathlib import Path
 
 import numpy as np
 import librosa
+import soundfile as sf
 
 from .audio import lowpass, highpass
 
@@ -84,7 +86,7 @@ def _separator(model_file: str, output_dir: str):
 
         with contextlib.redirect_stdout(io.StringIO()):
             sep = Separator(
-                log_level=logging.WARNING,
+                log_level=logging.ERROR,  # it warns about ONNX CUDA, which we don't use
                 model_file_dir=str(model_dir()),
                 output_dir=output_dir,
                 output_format="WAV",
@@ -100,19 +102,34 @@ def _separator(model_file: str, output_dir: str):
     return sep
 
 
-def separate_neural(path, method: str) -> dict[str, np.ndarray]:
-    model_file, _ = NEURAL_MODELS[method]
+def run_model(model_file: str, audio) -> dict[str, np.ndarray]:
+    """Run any audio-separator model on a file path or a mono 44.1 kHz array.
+
+    Returns mono stems keyed by the model's lower-cased stem names
+    (e.g. "drums", "other" or "kick", "hh").
+    """
     with tempfile.TemporaryDirectory(prefix="musictool-stems-") as out:
+        if isinstance(audio, np.ndarray):
+            src = Path(out) / "input.wav"
+            sf.write(src, audio, NEURAL_SR)
+        else:
+            src = Path(audio)
         sep = _separator(model_file, out)
         with contextlib.redirect_stdout(io.StringIO()):
-            files = sep.separate(str(path), custom_output_names={k: k.lower() for k in STEM_NAMES})
+            files = sep.separate(str(src))
         stems = {}
         for f in files:
             f = Path(f) if Path(f).is_absolute() else Path(out) / f
-            key = STEM_NAMES.get(f.stem.capitalize())
-            if key:
-                audio, _ = librosa.load(str(f), sr=NEURAL_SR, mono=True)
-                stems[key] = audio.astype(np.float32)
+            match = re.search(r"_\(([^)]+)\)", f.stem)
+            if match:
+                y, _ = librosa.load(str(f), sr=NEURAL_SR, mono=True)
+                stems[match.group(1).lower()] = y.astype(np.float32)
+    return stems
+
+
+def separate_neural(path, method: str) -> dict[str, np.ndarray]:
+    model_file, _ = NEURAL_MODELS[method]
+    stems = {STEM_NAMES[k.capitalize()]: v for k, v in run_model(model_file, path).items() if k.capitalize() in STEM_NAMES}
     missing = {"drums", "bass", "melodic"} - stems.keys()
     if missing:
         raise RuntimeError(f"Stem separation did not produce: {', '.join(sorted(missing))}")

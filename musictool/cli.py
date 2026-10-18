@@ -25,16 +25,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--save-stems", action="store_true", help="also write the separated audio stems as .wav")
     parser.add_argument("--separation", choices=["auto", "hpss", *NEURAL_MODELS], default="auto",
                         help="stem separation: auto (best installed), fast DSP (hpss) or a neural model")
-    parser.add_argument("--drum-engine", choices=["auto", "adtof", "dsp"], default="auto",
-                        help="drums: ADTOF neural net or the DSP onset classifier")
+    parser.add_argument("--drum-engine", choices=["auto", "ensemble", "drumsep", "adtof", "dsp"], default="auto",
+                        help="drums: DrumSep kit separation + ADTOF (ensemble), either alone, or the DSP classifier")
     parser.add_argument("--bpm", type=float, help="override detected tempo")
     parser.add_argument("--quantize", type=int, default=16, help="grid division, e.g. 16 for 16ths; 0 disables")
     parser.add_argument("--no-drums", action="store_true")
     parser.add_argument("--no-bass", action="store_true")
     parser.add_argument("--no-melodic", action="store_true")
-    parser.add_argument("--onset-threshold", type=float, default=0.5, help="0-1, higher = fewer notes")
-    parser.add_argument("--frame-threshold", type=float, default=0.3, help="0-1, higher = shorter notes")
-    parser.add_argument("--min-note-ms", type=float, default=80.0)
+    parser.add_argument("--onset-threshold", type=float, help="0-1, higher = fewer notes (default: tuned per stem)")
+    parser.add_argument("--frame-threshold", type=float, help="0-1, higher = shorter notes (default: tuned per stem)")
+    parser.add_argument("--min-note-ms", type=float, help="default: tuned per stem (50-80)")
     parser.add_argument("--mono-engine", choices=["auto", "crepe", "pyin", "basic-pitch"], default="auto",
                         help="engine for monophonic bass/vocal lines")
     parser.add_argument("--drum-sensitivity", type=float, default=0.5, help="0-1, higher = more drum hits")

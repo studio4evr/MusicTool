@@ -15,9 +15,9 @@ falls back to fast CPU methods. **Auto**, the default, picks the best engine tha
 | Stage | GPU engine (default with NVIDIA) | CPU fallback |
 |---|---|---|
 | Stem separation | **Demucs v4 fine-tuned** (Meta), giving drums / bass / other / vocals stems | Harmonic/percussive separation + band split |
-| Drums | **ADTOF** (CNN + bi-GRU trained on 114 h of real music), detecting kick, snare, toms, hi-hat and cymbal, with velocity from the network's confidence | Multi-band transient classifier |
-| Bass and vocal lines | **CREPE** (CNN pitch tracker) | pYIN |
-| Synths / chords | **Spotify Basic Pitch** (polyphonic CNN, run via ONNX) | the same |
+| Drums | **DrumSep** (MDX23C) splits the drum stem into kick / snare / toms / hi-hat / ride / crash, and onsets are detected on each piece. **ADTOF** (CNN + bi-GRU drum transcriber) then adds any hits DrumSep missed | Multi-band transient classifier |
+| Bass | **Spotify Basic Pitch**, one note at a time (**CREPE** is available as an option) | pYIN |
+| Synths / chords / leads | **Spotify Basic Pitch** (polyphonic CNN, run via ONNX) on the "other" and vocal stems, down to 55 Hz | the same, above 110 Hz |
 | Tempo | Beat tracking, then a beat-grid fit that also corrects 2:3 and 2:1 tempo errors | the same |
 | Quantisation | Grid phase is taken from the drum hits; notes snap to 1/8, 1/16 or 1/32 | the same |
 
@@ -31,11 +31,17 @@ a delayed arpeggio lead, reverb and saturation. Each engine combination is then 
 | Engines | kick | snare | hi-hat | bass | synths | mean |
 |---|---|---|---|---|---|---|
 | CPU fallback (DSP / DSP / pYIN) | 0.95 | 0.65 | 0.43 | 0.28 | 0.03 | 0.47 |
-| Demucs + ADTOF + CREPE (GPU default) | 0.99 | 0.92 | 0.93 | 0.68 | 0.31 | **0.77** |
+| Demucs + ADTOF + CREPE | 0.99 | 0.89 | 0.93 | 0.81 | 0.38 | 0.80 |
+| **Demucs + DrumSep/ADTOF + Basic Pitch (GPU default)** | 0.96 | 0.94 | 0.92 | 0.84 | 0.38 | **0.81** |
+
+`python bench/realtrack.py song.wav out.mid ...` scores transcriptions of a *real* track against
+its own separated stems: drum-hit recall, and how much of the time each stem is audible that the
+MIDI covers. On an Aphex Twin track, the GPU default finds 100% of drum hits (ADTOF alone labelled
+half the snares as hats) and covers 94% of the audible synth parts (up from 50% with the 110 Hz floor).
 
 The synth track is still the weakest part: sidechain pumping and delay echoes confuse note onsets.
-A 5-minute track takes about 90 s on an RTX 2070 Super. The stem-separation model (~300 MB)
-downloads on first use to `%LOCALAPPDATA%\musictool\models`.
+A 5-minute track takes about 110 s on an RTX 2070 Super. The separation models (~600 MB)
+download on first use to `%LOCALAPPDATA%\musictool\models`.
 
 ## Windows quick start
 

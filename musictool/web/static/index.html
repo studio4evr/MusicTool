@@ -36,7 +36,9 @@
         <label>Drum engine
           <select id="drum_engine">
             <option value="auto" selected>Auto (best installed)</option>
-            <option value="adtof" data-needs="adtof">ADTOF neural net</option>
+            <option value="ensemble" data-needs="adtof">DrumSep + ADTOF (best)</option>
+            <option value="drumsep" data-needs="neural_separation">DrumSep kit separation</option>
+            <option value="adtof" data-needs="adtof">ADTOF neural net (fast)</option>
             <option value="dsp">DSP onset classifier</option>
           </select>
         </label>
@@ -66,7 +68,7 @@
           <input id="drum_sensitivity" type="range" min="0" max="1" step="0.05" value="0.5">
         </label>
         <label>Min note length (ms)
-          <input id="min_note_ms" type="number" min="10" max="1000" step="10" value="80">
+          <input id="min_note_ms" type="number" min="10" max="1000" step="10" placeholder="auto">
         </label>
         <fieldset>
           <legend>Tracks</legend>
