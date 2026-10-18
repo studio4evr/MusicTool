@@ -209,7 +209,7 @@ def find_downbeat(stem, sr: int, bpm: float, beat_phase: float, snares: list[flo
     return beat_phase + int(np.argmax(change)) * beat
 
 
-def bar_chord_pads(stem, sr: int, bpm: float, downbeat: float, share: float = 0.5) -> list[Note]:
+def bar_chord_pads(stem, sr: int, bpm: float, downbeat: float, share: float = 0.5, min_pitch: int = 48) -> list[Note]:
     """Pads as one chord per bar: pitches Basic Pitch hears sustained through at least
     `share` of a bar, written from bar line to bar line (how pads are usually charted).
     On a real track: pad F1 0.38 against a commercial transcription, vs ~0.15 when
@@ -219,7 +219,7 @@ def bar_chord_pads(stem, sr: int, bpm: float, downbeat: float, share: float = 0.
     from .pitch import merge_fragments, transcribe_pitched
 
     notes = transcribe_pitched(stem, sr, onset_threshold=0.25, frame_threshold=0.15, min_note_ms=100, min_freq=55.0)
-    cands = [n for n in merge_fragments(notes, max_gap=0.3) if n.end - n.start >= 0.25 and 48 <= n.pitch < 84]
+    cands = [n for n in merge_fragments(notes, max_gap=0.3) if n.end - n.start >= 0.25 and min_pitch <= n.pitch < 84]
     bar = 4 * 60.0 / bpm
     t0 = downbeat - bar * int(downbeat // bar)
     out = []

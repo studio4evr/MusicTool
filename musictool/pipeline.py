@@ -70,6 +70,7 @@ class TranscriptionOptions:
     # harmonic change + backbeat). Synth F1 0.33 -> 0.43 against a commercial transcription
     # of a real track (frame 0.27 -> 0.47), bench/ synths 0.53 -> 0.61.
     pad_layer: bool = True
+    pad_min_pitch: int = 36  # lowest pad-chord note (the synth clean-up floor does not apply to pads)
     # YourMT3+ bass: fill its silent gaps with Basic Pitch notes from these sources
     # ("stem" = the Demucs bass stem, "low-synth" = synth notes below synth_min_pitch).
     bass_fill: tuple[str, ...] = ()
@@ -323,7 +324,9 @@ def transcribe(path, options: TranscriptionOptions | None = None, progress: Prog
         mono_tracks = ({"Bass"} & mono_tracks) | {"Synth Lead"}
     if opts.melodic and opts.synth_engine == "vote":
         report(f"Synth voting: Basic Pitch + {len(opts.vote_passes)} YourMT3+ passes", 0.75)
-        passes = [_run_mt3(path, mt3_stems, v, s) for v, s in opts.vote_passes]
+        floor = opts.synth_min_pitch or 0
+        passes = [{k: [n for n in v if n.pitch >= floor] for k, v in _run_mt3(path, mt3_stems, vv, s).items()}
+                  for vv, s in opts.vote_passes]
         raw = [n for t in tracks if t.name in SYNTH_SOURCE_TRACKS for n in t.notes]
         base = [n for n in raw if n.pitch >= (opts.synth_min_pitch or 0) and n.velocity >= (opts.synth_min_velocity or 0)]
         if opts.vote_short_notes and "melodic" in stems:
@@ -334,7 +337,7 @@ def transcribe(path, options: TranscriptionOptions | None = None, progress: Prog
         groups = vote_synths(base, passes, opts.vote_min, durations=raw, sustain_rescue=opts.vote_sustain_rescue)
         if opts.pad_layer and "melodic" in stems:
             report("Charting pads bar by bar", 0.85)
-            groups = _with_bar_pads(groups, tracks, stems["melodic"], stem_sr, bpm)
+            groups = _with_bar_pads(groups, tracks, stems["melodic"], stem_sr, bpm, opts.pad_min_pitch)
         tracks = [t for t in tracks if t.name not in SYNTH_SOURCE_TRACKS] + _instrument_tracks(groups)
         mono_tracks = {"Bass"} & mono_tracks
     if opts.melodic and opts.synth_engine in ("hybrid", "yourmt3"):
@@ -346,8 +349,8 @@ def transcribe(path, options: TranscriptionOptions | None = None, progress: Prog
     if opts.synth_min_pitch or opts.synth_min_velocity:
         low_synth = []
         for t in tracks:
-            if t.is_drum or t.name == "Bass":
-                continue
+            if t.is_drum or t.name == "Bass" or (opts.synth_engine == "vote" and opts.pad_layer and t.name == "Synth Pad"):
+                continue  # pad chords have their own floor (pad_min_pitch); vote inputs were floored already
             low_synth += [n for n in t.notes if n.pitch < opts.synth_min_pitch and n.velocity >= opts.synth_min_velocity]
             t.notes = [n for n in t.notes if n.pitch >= opts.synth_min_pitch and n.velocity >= opts.synth_min_velocity]
         tracks = [t for t in tracks if t.is_drum or t.name == "Bass" or t.notes]
@@ -489,11 +492,23 @@ def _run_mt3_uncached(path, stems: dict | None, variant: str, source: str) -> di
     from .mt3 import transcribe_mt3
     from .separation import NEURAL_SR
 
+    import numpy as np
+
+    # "<input>@shift": the same pass with the audio delayed by half a YourMT3+ segment, so its
+    # segment boundaries (where notes get dropped) fall elsewhere - an independent-ish vote
+    source, _, shifted = source.partition("@")
     mix, _ = librosa.load(str(path), sr=NEURAL_SR, mono=True)
     if source == "no-drums" and stems is not None and "drums" in stems:
         n = min(len(mix), len(stems["drums"]))
         mix = mix[:n] - stems["drums"][:n]
-    return transcribe_mt3(mix, NEURAL_SR, variant=variant)
+    elif source == "other" and stems is not None and "melodic" in stems:
+        mix = stems["melodic"] + stems.get("vocals", 0)
+    if not shifted:
+        return transcribe_mt3(mix, NEURAL_SR, variant=variant)
+    delay = 1.024  # half of a 2.048 s segment
+    out = transcribe_mt3(np.concatenate([np.zeros(int(delay * NEURAL_SR), dtype=mix.dtype), mix]), NEURAL_SR, variant=variant)
+    return {k: [Note(n.start - delay, n.end - delay, n.pitch, n.velocity) for n in v if n.start >= delay]
+            for k, v in out.items()}
 
 
 def _split_synths_by_instrument(tracks: list[Track], labelled: dict[str, list[Note]], engine: str,
@@ -516,7 +531,8 @@ def _split_synths_by_instrument(tracks: list[Track], labelled: dict[str, list[No
     return kept + _instrument_tracks(groups)
 
 
-def _with_bar_pads(groups: dict[str, list[Note]], tracks: list[Track], stem, sr: int, bpm: float) -> dict[str, list[Note]]:
+def _with_bar_pads(groups: dict[str, list[Note]], tracks: list[Track], stem, sr: int, bpm: float,
+                   min_pitch: int = 48) -> dict[str, list[Note]]:
     """Add bar-chord pads as "Synth Pad"; drop voted notes they already cover."""
     from .instruments import bar_chord_pads, find_downbeat
 
@@ -524,7 +540,7 @@ def _with_bar_pads(groups: dict[str, list[Note]], tracks: list[Track], stem, sr:
     beat = 60.0 / bpm
     phase = grid_phase([n.start for n in drums], beat) if drums else 0.0
     downbeat = find_downbeat(stem, sr, bpm, phase, [n.start for n in drums if n.pitch == 38])
-    pads = bar_chord_pads(stem, sr, bpm, downbeat)
+    pads = bar_chord_pads(stem, sr, bpm, downbeat, min_pitch=min_pitch)
 
     def covered(n: Note) -> bool:
         return any(p.pitch == n.pitch and p.start - 0.05 <= n.start and n.end <= p.end + 0.3 and n.end - n.start > 0.5
