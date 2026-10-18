@@ -59,6 +59,10 @@ class TranscriptionOptions:
     vote_passes: tuple[tuple[str, str], ...] = (("moe-nops", "no-drums"), ("moe-nops", "full"),
                                                  ("moe-ps", "no-drums"), ("moe-ps", "full"))
     vote_min: int = 2
+    # vote: Basic Pitch also listens for short notes (>= 30 ms, the lead's 32nd-note arps)
+    # at these thresholds, in this pitch range; it still counts as one (Basic Pitch) vote
+    vote_short_notes: tuple[float, float] | None = None
+    vote_short_range: tuple[int, int] = (56, 90)
     # also keep Basic Pitch notes at least this long (s) without a second vote (sustained
     # pads, which YourMT3+ cuts short). Superseded by pad_layer, which charts them better.
     vote_sustain_rescue: float | None = None
@@ -69,6 +73,10 @@ class TranscriptionOptions:
     # YourMT3+ bass: fill its silent gaps with Basic Pitch notes from these sources
     # ("stem" = the Demucs bass stem, "low-synth" = synth notes below synth_min_pitch).
     bass_fill: tuple[str, ...] = ()
+    # Move a YourMT3+ bass note down an octave when the drum-free stems carry more energy
+    # there than at the note itself (it heard a sub-bass's 2nd harmonic). None = off.
+    # Bass F1 0.64 -> 0.68 against a commercial transcription, bench/ 0.80 -> 0.85.
+    bass_octave_ratio: float | None = 1.0
     # Clean-up of the synth tracks. None = auto (on for neural stems, off for HPSS), 0 = off.
     # With the bass on its own track, synth notes below C3 mostly double it, and quiet
     # Basic Pitch notes are mostly reverb tails / overtones. Dropping both: synth F1 0.37 ->
@@ -272,6 +280,9 @@ def transcribe(path, options: TranscriptionOptions | None = None, progress: Prog
         if key == "bass" and opts.mono_engine == "yourmt3":
             mt3_bass = list(bass_labelled.get("Bass", []))
             if _coverage(mt3_bass, stems[key], stem_sr) >= 0.3:
+                if opts.bass_octave_ratio is not None:
+                    pitched = sum(v for k, v in stems.items() if k != "drums")
+                    mt3_bass = _fix_sub_octaves(mt3_bass, pitched, stem_sr, opts.bass_octave_ratio)
                 if "stem" in opts.bass_fill:
                     stem_bass = transcribe_pitched(stems[key], stem_sr, min_note_ms=p.min_note_ms, min_freq=p.fmin,
                                                    max_freq=p.fmax, monophonic=True)
@@ -315,6 +326,11 @@ def transcribe(path, options: TranscriptionOptions | None = None, progress: Prog
         passes = [_run_mt3(path, mt3_stems, v, s) for v, s in opts.vote_passes]
         raw = [n for t in tracks if t.name in SYNTH_SOURCE_TRACKS for n in t.notes]
         base = [n for n in raw if n.pitch >= (opts.synth_min_pitch or 0) and n.velocity >= (opts.synth_min_velocity or 0)]
+        if opts.vote_short_notes and "melodic" in stems:
+            lo, hi = opts.vote_short_range
+            short = transcribe_pitched(stems["melodic"], stem_sr, onset_threshold=opts.vote_short_notes[0],
+                                       frame_threshold=opts.vote_short_notes[1], min_note_ms=30, min_freq=55.0)
+            base += [n for n in short if lo <= n.pitch < hi and n.end - n.start <= 0.2]
         groups = vote_synths(base, passes, opts.vote_min, durations=raw, sustain_rescue=opts.vote_sustain_rescue)
         if opts.pad_layer and "melodic" in stems:
             report("Charting pads bar by bar", 0.85)
@@ -384,6 +400,29 @@ def _merge_labels(a: dict[str, list[Note]], b: dict[str, list[Note]], tol: float
             lo, hi = bisect.bisect_left(starts, n.start - tol), bisect.bisect_right(starts, n.start + tol)
             if not any(flat[i].pitch == n.pitch for i in range(lo, hi)):
                 out.setdefault(k, []).append(n)
+    return out
+
+
+def _fix_sub_octaves(notes: list[Note], audio, sr: int, ratio: float, lowest: int = 28) -> list[Note]:
+    """Move a note down an octave if the audio has more energy there than at the note."""
+    import librosa
+    import numpy as np
+
+    hop, base = 512, 24
+    C = np.abs(librosa.cqt(audio, sr=sr, hop_length=hop, fmin=librosa.midi_to_hz(base), n_bins=72, bins_per_octave=12))
+
+    def energy(n: Note, pitch: int) -> float:
+        a = int(n.start * sr / hop)
+        b = max(a + 1, int(n.end * sr / hop))
+        k = pitch - base
+        return float(C[k, a:b].mean()) if 0 <= k < C.shape[0] and a < C.shape[1] else 0.0
+
+    out = []
+    for n in notes:
+        down = n.pitch - 12
+        if down >= lowest and energy(n, down) > ratio * energy(n, n.pitch):
+            n = Note(n.start, n.end, down, n.velocity)
+        out.append(n)
     return out
 
 
