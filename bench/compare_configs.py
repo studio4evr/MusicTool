@@ -24,6 +24,8 @@ BASE = dict(separation="demucs-ft", drum_engine="ensemble")
 CONFIGS = {
     "default (auto)": dict(),
     "default, drop unlabelled": dict(unlabelled_min_velocity=None),
+    "vote, fine-tuned moe": dict(vote_passes=(("moe-nops-edm", "no-drums"), ("moe-nops-edm", "full"), ("moe-ps", "no-drums"), ("moe-ps", "full"))),
+    "vote, fine-tuned moe added": dict(vote_passes=(("moe-nops", "no-drums"), ("moe-nops", "full"), ("moe-ps", "no-drums"), ("moe-ps", "full"), ("moe-nops-edm", "no-drums"), ("moe-nops-edm", "full")), vote_min=3),
     "vote 2-of-5": dict(synth_engine="vote"),
     "vote 2-of-4 (3 passes)": dict(synth_engine="vote", vote_passes=(("moe-nops", "no-drums"), ("moe-nops", "full"), ("moe-ps", "full"))),
     "vote 3-of-5": dict(synth_engine="vote", vote_min=3),

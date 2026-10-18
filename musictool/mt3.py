@@ -37,6 +37,8 @@ VARIANTS = {
                 "-ac", "spec", "-hop", "300", "-atc", "1"]),
 }
 DEFAULT_VARIANT = "moe-nops"
+# Fine-tuned on bench/edm_dataset.py by bench/finetune_mt3.py (only present if you ran it)
+VARIANTS["moe-nops-edm"] = ("mc13_256_g4_all_v7_mt3f_sqr_rms_moe_wf4_n8k2_silu_rope_rp_b36_nops_edm@last.ckpt", _MOE)
 
 
 def ckpt_path(variant: str = DEFAULT_VARIANT) -> Path:

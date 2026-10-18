@@ -8,3 +8,4 @@ dist/
 .pytest_cache/
 output/
 third_party/
+data/
