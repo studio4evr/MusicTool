@@ -28,7 +28,7 @@ def test_auto_picks_neural_engines(neural_result):
         "separation": "demucs-ft",
         "drums": "ensemble",
         "bass": "yourmt3" if ymt3_available("ptf-ps") else "basic-pitch",
-        "synths": "hybrid" if ymt3_available() else "basic-pitch",
+        "synths": "vote" if ymt3_available("moe-ps") else ("hybrid" if ymt3_available() else "basic-pitch"),
     }
 
 
@@ -95,3 +95,19 @@ def test_hybrid_splits_synths_into_instruments(neural_result):
     assert "Drums" in names and "Bass" in names
     pitched = [t for t in neural_result.tracks if not t.is_drum and t.name != "Bass"]
     assert pitched and sum(len(t.notes) for t in pitched) > 0
+
+
+def test_vote_synths():
+    from musictool.instruments import vote_synths
+
+    base = [Note(0.0, 0.5, 60, 80), Note(1.0, 1.2, 64, 80), Note(2.0, 4.0, 67, 80)]
+    passes = [
+        {"Synth Lead": [Note(0.01, 0.1, 60, 100)], "Bass": [Note(1.0, 1.1, 64, 100)]},
+        {"Synth Lead": [Note(0.02, 0.1, 60, 100)], "Synth Pad": [Note(3.0, 3.1, 72, 100)]},
+    ]
+    out = vote_synths(base, passes, min_votes=2, sustain_rescue=1.0)
+    pitches = {n.pitch: (lab, n) for lab, ns in out.items() for n in ns}
+    assert pitches[60][0] == "Synth Lead" and pitches[60][1].end == 0.5  # 3 votes, Basic Pitch length
+    assert 64 not in pitches  # one vote (a Bass-labelled pass note doesn't count for synths)
+    assert 72 not in pitches  # one vote
+    assert 67 in pitches  # long Basic Pitch note rescued

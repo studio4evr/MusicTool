@@ -24,6 +24,11 @@ BASE = dict(separation="demucs-ft", drum_engine="ensemble")
 CONFIGS = {
     "default (auto)": dict(),
     "default, drop unlabelled": dict(unlabelled_min_velocity=None),
+    "vote 2-of-5": dict(synth_engine="vote"),
+    "vote 2-of-4 (3 passes)": dict(synth_engine="vote", vote_passes=(("moe-nops", "no-drums"), ("moe-nops", "full"), ("moe-ps", "full"))),
+    "vote 3-of-5": dict(synth_engine="vote", vote_min=3),
+    "vote + rescue 0.5s": dict(synth_engine="vote", vote_sustain_rescue=0.5),
+    "vote + rescue 1.0s": dict(synth_engine="vote", vote_sustain_rescue=1.0),
     "bass fill: stem": dict(bass_fill=("stem",)),
     "bass fill: low synth": dict(bass_fill=("low-synth",)),
     "bass fill: both": dict(bass_fill=("stem", "low-synth")),

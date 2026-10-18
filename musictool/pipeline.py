@@ -23,7 +23,7 @@ from .pitch import (
     transcribe_monophonic,
     transcribe_pitched,
 )
-from .instruments import lead_and_pad
+from .instruments import lead_and_pad, vote_synths
 from .mt3 import ymt3_available
 from .separation import best_separation, separate, separation_label
 from .timing import estimate_tempo, grid_phase, grid_step, quantize
@@ -55,6 +55,13 @@ class TranscriptionOptions:
     hybrid_add_missing: bool = True  # hybrid: also add the YourMT3+ notes Basic Pitch missed
     # extra YourMT3+ passes, (variant, input), merged into the instrument labels
     extra_label_passes: tuple[tuple[str, str], ...] = ()
+    # synth_engine "vote": YourMT3+ passes that vote alongside Basic Pitch, and votes needed
+    vote_passes: tuple[tuple[str, str], ...] = (("moe-nops", "no-drums"), ("moe-nops", "full"),
+                                                 ("moe-ps", "no-drums"), ("moe-ps", "full"))
+    vote_min: int = 2
+    # also keep Basic Pitch notes at least this long (s) without a second vote: sustained pads,
+    # which YourMT3+ cuts short (real-track frame F1 0.11 -> 0.28, note F1 unchanged)
+    vote_sustain_rescue: float | None = 1.0
     # YourMT3+ bass: fill its silent gaps with Basic Pitch notes from these sources
     # ("stem" = the Demucs bass stem, "low-synth" = synth notes below synth_min_pitch).
     bass_fill: tuple[str, ...] = ()
@@ -106,6 +113,10 @@ def resolve_engines(opts: TranscriptionOptions) -> TranscriptionOptions:
         mono = "pyin"  # Basic Pitch makes octave errors on HPSS's leaky low end
     if opts.synth_engine != "auto":
         synth = opts.synth_engine
+    elif separation != "hpss" and all(ymt3_available(v) for v, _ in opts.vote_passes):
+        # Basic Pitch + 4 YourMT3+ passes, 2 votes: synth F1 0.26 -> 0.34 against a commercial
+        # transcription of a real track, 0.52 -> 0.54 on bench/ (bench/compare_configs.py)
+        synth = "vote"
     else:  # the hybrid needs clean stems to subtract the drums from the mix
         synth = "hybrid" if separation != "hpss" and ymt3_available() else "basic-pitch"
     return replace(
@@ -295,6 +306,14 @@ def transcribe(path, options: TranscriptionOptions | None = None, progress: Prog
         for name, notes in lead_and_pad(stems["melodic"], stem_sr).items():
             tracks.append(Track(name, 81 if name == "Synth Lead" else 89, False, notes))
         mono_tracks = ({"Bass"} & mono_tracks) | {"Synth Lead"}
+    if opts.melodic and opts.synth_engine == "vote":
+        report(f"Synth voting: Basic Pitch + {len(opts.vote_passes)} YourMT3+ passes", 0.75)
+        passes = [_run_mt3(path, mt3_stems, v, s) for v, s in opts.vote_passes]
+        raw = [n for t in tracks if t.name in SYNTH_SOURCE_TRACKS for n in t.notes]
+        base = [n for n in raw if n.pitch >= (opts.synth_min_pitch or 0) and n.velocity >= (opts.synth_min_velocity or 0)]
+        groups = vote_synths(base, passes, opts.vote_min, durations=raw, sustain_rescue=opts.vote_sustain_rescue)
+        tracks = [t for t in tracks if t.name not in SYNTH_SOURCE_TRACKS] + _instrument_tracks(groups)
+        mono_tracks = {"Bass"} & mono_tracks
     if opts.melodic and opts.synth_engine in ("hybrid", "yourmt3"):
         report("Splitting synths by instrument", 0.9)
         tracks = _split_synths_by_instrument(tracks, labelled, opts.synth_engine, opts.unlabelled_min_velocity,
@@ -448,5 +467,13 @@ def _split_synths_by_instrument(tracks: list[Track], labelled: dict[str, list[No
             rest = [n for n in rest if n.velocity >= unlabelled_min_velocity]
             if rest:
                 groups[OTHER] = rest
+    return kept + _instrument_tracks(groups)
+
+
+def _instrument_tracks(groups: dict[str, list[Note]]) -> list[Track]:
+    """One Track per instrument, biggest first, the unlabelled bucket last."""
+    from .instruments import OTHER
+    from .mt3 import TRACK_PROGRAMS
+
     ordered = sorted(groups.items(), key=lambda kv: (kv[0] == OTHER, -len(kv[1])))
-    return kept + [Track(name, TRACK_PROGRAMS.get(name, 81), False, notes) for name, notes in ordered]
+    return [Track(name, TRACK_PROGRAMS.get(name, 81), False, notes) for name, notes in ordered if notes]

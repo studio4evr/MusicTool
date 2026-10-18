@@ -108,3 +108,71 @@ def lead_and_pad(stem, sr: int) -> dict[str, list[Note]]:
     pad = merge_fragments(pad, max_gap=0.3)
     pad = _drop_harmonics([n for n in pad if n.end - n.start >= 0.25])
     return {"Synth Lead": lead, "Synth Pad": sorted(pad, key=lambda n: (n.start, n.pitch))}
+
+
+class _Index:
+    def __init__(self, notes):
+        import bisect
+
+        self._bisect = bisect
+        self.notes = sorted(notes, key=lambda n: n.start)
+        self.starts = [n.start for n in self.notes]
+
+    def match(self, note: Note, tol: float = 0.05) -> list[Note]:
+        lo = self._bisect.bisect_left(self.starts, note.start - tol)
+        hi = self._bisect.bisect_right(self.starts, note.start + tol)
+        return [self.notes[i] for i in range(lo, hi) if self.notes[i].pitch == note.pitch]
+
+
+def _sounding(index: "_Index", note: Note, lookback: float = 0.5) -> list[Note]:
+    """Notes of `index` at the same pitch that are sounding when `note` starts."""
+    import bisect
+
+    lo = bisect.bisect_left(index.starts, note.start - lookback)
+    hi = bisect.bisect_right(index.starts, note.start + 0.08)
+    return [index.notes[i] for i in range(lo, hi)
+            if index.notes[i].pitch == note.pitch and index.notes[i].end > note.start]
+
+
+def vote_synths(base: list[Note], passes: list[dict[str, list[Note]]], min_votes: int = 2,
+                durations: list[Note] | None = None, sustain_rescue: float | None = None) -> dict[str, list[Note]]:
+    """Keep synth notes that at least `min_votes` sources agree on (same pitch, onset
+    within 50 ms). Sources: Basic Pitch (`base`) and each YourMT3+ pass.
+
+    Independent models rarely make the *same* mistake, so agreement filters out
+    the extra notes (reverb, delays, textures) any single model adds. On a real
+    track scored against a commercial transcription, 2-of-5 voting lifted synth
+    F1 from ~0.25 (Basic Pitch split by YourMT3+ labels) to 0.33.
+
+    Instrument = the majority YourMT3+ label among the agreeing notes; length =
+    the longest agreeing note, extended by Basic Pitch (`durations`), since
+    YourMT3+ cuts synth notes short.
+    """
+    from collections import Counter
+
+    sources = [[(None, n) for n in base]] + [
+        [(label, n) for label, ns in p.items() if label not in ("Drums", "Bass") for n in ns] for p in passes
+    ]
+    indexes = [_Index([n for _, n in src]) for src in sources]
+    label_of = {id(n): label for src in sources for label, n in src}
+    dur_index = _Index(durations if durations is not None else base)
+
+    pool = sorted((n for src in sources for _, n in src), key=lambda n: (n.start, n.pitch))
+    kept: list[Note] = []
+    out: dict[str, list[Note]] = {}
+    for n in pool:
+        if any(m.pitch == n.pitch and n.start - m.start <= 0.05 for m in kept[-40:]):
+            continue  # already decided for this note
+        matches = [idx.match(n) for idx in indexes]
+        votes = sum(bool(m) for m in matches)
+        rescued = (sustain_rescue is not None and label_of[id(n)] is None and n.end - n.start >= sustain_rescue)
+        if votes < min_votes and not rescued:
+            continue
+        agreeing = [m for ms in matches for m in ms]
+        labels = Counter(label_of[id(m)] for m in agreeing if label_of[id(m)] is not None)
+        label = labels.most_common(1)[0][0] if labels else OTHER
+        end = max([m.end for m in agreeing] + [m.end for m in _sounding(dur_index, n)])
+        velocity = max(m.velocity for m in agreeing)
+        kept.append(n)
+        out.setdefault(label, []).append(Note(n.start, max(end, n.start + 0.03), n.pitch, min(127, velocity)))
+    return out

@@ -36,8 +36,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--onset-threshold", type=float, help="0-1, higher = fewer notes (default: tuned per stem)")
     parser.add_argument("--frame-threshold", type=float, help="0-1, higher = shorter notes (default: tuned per stem)")
     parser.add_argument("--min-note-ms", type=float, help="default: tuned per stem (50-80)")
-    parser.add_argument("--synth-engine", choices=["auto", "hybrid", "layers", "yourmt3", "basic-pitch"], default="auto",
-                        help="synths: Basic Pitch notes split into instruments by YourMT3+ (hybrid), "
+    parser.add_argument("--synth-engine", choices=["auto", "vote", "hybrid", "layers", "yourmt3", "basic-pitch"], default="auto",
+                        help="synths: Basic Pitch + 4 YourMT3+ passes voting (vote), Basic Pitch split by YourMT3+ labels (hybrid), "
                              "lead + pad layers, YourMT3+ alone, or Basic Pitch as one track")
     parser.add_argument("--mt3-variant", choices=["moe-nops", "moe-ps", "ptf-ps"], default="moe-nops",
                         help="YourMT3+ checkpoint for synth instrument labels")

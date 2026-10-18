@@ -47,7 +47,7 @@ $("drum_sensitivity").addEventListener("input", (e) => ($("drum_out").textConten
 const ENGINE_LABELS = {
   "demucs-ft": "Demucs v4 fine-tuned", demucs: "Demucs v4", hpss: "DSP separation",
   ensemble: "DrumSep + ADTOF drums", drumsep: "DrumSep drums", adtof: "ADTOF drums", dsp: "DSP drums", crepe: "CREPE bass", pyin: "pYIN bass",
-  "basic-pitch": "Basic Pitch", hybrid: "Instruments: Basic Pitch + YourMT3+", yourmt3: "YourMT3+", layers: "Lead + pad layers",
+  "basic-pitch": "Basic Pitch", vote: "Synths: Basic Pitch + YourMT3+ voting", hybrid: "Instruments: Basic Pitch + YourMT3+", yourmt3: "YourMT3+", layers: "Lead + pad layers",
 };
 // Colours for the extra instrument tracks YourMT3+ produces.
 const EXTRA_COLORS = ["#b197fc", "#ffa94d", "#63e6be", "#f783ac", "#74c0fc", "#d8f5a2", "#ffe066", "#e599f7", "#ff8787"];

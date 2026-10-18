@@ -120,8 +120,10 @@ async def create_job(
         raise HTTPException(400, "The YourMT3+ bass model is not installed (run install.bat)")
     if mono_engine == "crepe" and not crepe_available():
         raise HTTPException(400, "CREPE is not installed on the server")
-    if synth_engine not in ("auto", "hybrid", "layers", "yourmt3", "basic-pitch"):
-        raise HTTPException(400, "synth_engine must be 'auto', 'hybrid', 'layers', 'yourmt3' or 'basic-pitch'")
+    if synth_engine not in ("auto", "vote", "hybrid", "layers", "yourmt3", "basic-pitch"):
+        raise HTTPException(400, "synth_engine must be 'auto', 'vote', 'hybrid', 'layers', 'yourmt3' or 'basic-pitch'")
+    if synth_engine == "vote" and not ymt3_available("moe-ps"):
+        raise HTTPException(400, "Voting needs the YourMT3+ moe-ps model (run install.bat)")
     if synth_engine in ("hybrid", "yourmt3") and not ymt3_available():
         raise HTTPException(400, "YourMT3+ is not installed on the server (run install.bat)")
 
