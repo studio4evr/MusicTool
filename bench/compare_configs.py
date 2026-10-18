@@ -27,6 +27,8 @@ CONFIGS = {
     "vote 2-of-5": dict(synth_engine="vote"),
     "vote 2-of-4 (3 passes)": dict(synth_engine="vote", vote_passes=(("moe-nops", "no-drums"), ("moe-nops", "full"), ("moe-ps", "full"))),
     "vote 3-of-5": dict(synth_engine="vote", vote_min=3),
+    "vote + bar pads": dict(synth_engine="vote", pad_layer=True),
+    "vote no rescue + bar pads": dict(synth_engine="vote", pad_layer=True, vote_sustain_rescue=None),
     "vote + rescue 0.5s": dict(synth_engine="vote", vote_sustain_rescue=0.5),
     "vote + rescue 1.0s": dict(synth_engine="vote", vote_sustain_rescue=1.0),
     "bass fill: stem": dict(bass_fill=("stem",)),

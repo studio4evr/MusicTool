@@ -105,9 +105,27 @@ def test_vote_synths():
         {"Synth Lead": [Note(0.01, 0.1, 60, 100)], "Bass": [Note(1.0, 1.1, 64, 100)]},
         {"Synth Lead": [Note(0.02, 0.1, 60, 100)], "Synth Pad": [Note(3.0, 3.1, 72, 100)]},
     ]
-    out = vote_synths(base, passes, min_votes=2, sustain_rescue=1.0)
+    out = vote_synths(base, passes, min_votes=2, sustain_rescue=1.0)  # rescue is opt-in
     pitches = {n.pitch: (lab, n) for lab, ns in out.items() for n in ns}
     assert pitches[60][0] == "Synth Lead" and pitches[60][1].end == 0.5  # 3 votes, Basic Pitch length
     assert 64 not in pitches  # one vote (a Bass-labelled pass note doesn't count for synths)
     assert 72 not in pitches  # one vote
     assert 67 in pitches  # long Basic Pitch note rescued
+
+
+def test_bar_chord_pads_start_on_bar_lines():
+    import numpy as np
+    from musictool.instruments import bar_chord_pads
+
+    sr, bpm = 22050, 120.0
+    bar = 2.0
+    t = np.arange(int(4 * bar * sr)) / sr
+    y = np.zeros_like(t)
+    for i, chord in enumerate(([60, 64, 67], [62, 65, 69], [60, 64, 67], [62, 65, 69])):
+        seg = (t >= i * bar) & (t < (i + 1) * bar)
+        for p in chord:
+            y[seg] += 0.2 * np.sin(2 * np.pi * 440 * 2 ** ((p - 69) / 12) * t[seg])
+    pads = bar_chord_pads(y.astype(np.float32), sr, bpm, downbeat=0.0)
+    assert pads and all(abs(n.start / bar - round(n.start / bar)) < 1e-6 for n in pads)
+    first = sorted(n.pitch for n in pads if n.start == 0.0)
+    assert {60, 64, 67} <= set(first)

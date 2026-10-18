@@ -176,3 +176,61 @@ def vote_synths(base: list[Note], passes: list[dict[str, list[Note]]], min_votes
         kept.append(n)
         out.setdefault(label, []).append(Note(n.start, max(end, n.start + 0.03), n.pitch, min(127, velocity)))
     return out
+
+
+def find_downbeat(stem, sr: int, bpm: float, beat_phase: float, snares: list[float]) -> float:
+    """Time of a bar line (beat 1), from beat phase + harmonic change + snare placement.
+
+    Chords mostly change on beat 1, so the beat offset (mod 4) with the most chroma
+    change in the "other" stem wins, among offsets that don't carry the backbeat
+    (snares sit on beats 2 and 4, so a snare-heavy offset can't be beat 1).
+    """
+    import librosa
+    import numpy as np
+
+    beat = 60.0 / bpm
+    hop = 512
+    chroma = librosa.feature.chroma_cqt(y=stem, sr=sr, hop_length=hop)
+    novelty = np.r_[0.0, np.linalg.norm(np.diff(chroma, axis=1), axis=0)]
+    beats = np.arange(beat_phase, len(stem) / sr, beat)
+    frames = np.clip((beats * sr / hop).astype(int), 0, len(novelty) - 1)
+    per_beat = np.array([novelty[max(0, f - 2): f + 3].max() for f in frames])
+    change = np.array([per_beat[i::4].mean() if len(per_beat[i::4]) else 0.0 for i in range(4)])
+
+    snare_share = np.zeros(4)
+    for t in snares:
+        k = int(round((t - beat_phase) / beat))
+        if abs((t - beat_phase) / beat - k) < 0.25:
+            snare_share[k % 4] += 1
+    if snare_share.sum() >= 8:
+        backbeat = snare_share > 0.6 * snare_share.max()
+        if not backbeat.all():
+            change[backbeat] = -1.0
+    return beat_phase + int(np.argmax(change)) * beat
+
+
+def bar_chord_pads(stem, sr: int, bpm: float, downbeat: float, share: float = 0.5) -> list[Note]:
+    """Pads as one chord per bar: pitches Basic Pitch hears sustained through at least
+    `share` of a bar, written from bar line to bar line (how pads are usually charted).
+    On a real track: pad F1 0.38 against a commercial transcription, vs ~0.15 when
+    taking Basic Pitch's own pad onsets, which smear over the attack."""
+    import numpy as np
+
+    from .pitch import merge_fragments, transcribe_pitched
+
+    notes = transcribe_pitched(stem, sr, onset_threshold=0.25, frame_threshold=0.15, min_note_ms=100, min_freq=55.0)
+    cands = [n for n in merge_fragments(notes, max_gap=0.3) if n.end - n.start >= 0.25 and 48 <= n.pitch < 84]
+    bar = 4 * 60.0 / bpm
+    t0 = downbeat - bar * int(downbeat // bar)
+    out = []
+    for b in np.arange(t0, len(stem) / sr, bar):
+        e = b + bar
+        cover: dict[int, float] = {}
+        vel: dict[int, int] = {}
+        for n in cands:
+            ov = min(n.end, e) - max(n.start, b)
+            if ov > 0:
+                cover[n.pitch] = cover.get(n.pitch, 0.0) + ov
+                vel[n.pitch] = max(vel.get(n.pitch, 0), n.velocity)
+        out += [Note(float(b), float(e), p, vel[p]) for p, c in cover.items() if c >= share * bar]
+    return out
