@@ -4,6 +4,9 @@ import pytest
 
 from musictool import TranscriptionOptions, transcribe
 from musictool.drums import adtof_available, transcribe_drums_adtof
+from musictool.instruments import OTHER, assign_instruments
+from musictool.mt3 import ymt3_available
+from musictool.notes import Note
 from musictool.pitch import crepe_available, transcribe_monophonic
 from musictool.separation import neural_available
 
@@ -24,8 +27,8 @@ def test_auto_picks_neural_engines(neural_result):
     assert neural_result.engines == {
         "separation": "demucs-ft",
         "drums": "ensemble",
-        "bass": "basic-pitch",
-        "synths": "basic-pitch",
+        "bass": "yourmt3" if ymt3_available("ptf-ps") else "basic-pitch",
+        "synths": "hybrid" if ymt3_available() else "basic-pitch",
     }
 
 
@@ -64,3 +67,31 @@ def test_adtof_silence():
     import numpy as np
 
     assert transcribe_drums_adtof(np.zeros(44100, dtype=np.float32), 44100) == []
+
+
+def test_assign_instruments():
+    labelled = {
+        "Synth Lead": [Note(0.0, 1.0, 72, 90)],
+        "Synth Pad": [Note(0.0, 4.0, 60, 80), Note(0.0, 4.0, 64, 80)],
+        "Drums": [Note(0.0, 0.1, 36, 100)],
+    }
+    notes = [
+        Note(0.0, 1.0, 72, 100),  # same pitch, overlapping -> Synth Lead
+        Note(0.5, 3.0, 64, 100),  # same pitch, overlapping -> Synth Pad
+        Note(1.5, 2.0, 74, 100),  # no overlap; nearest labelled note in the line -> Synth Lead
+        Note(30.0, 31.0, 40, 100),  # nothing nearby -> unlabelled
+    ]
+    tracks = assign_instruments(notes, labelled, min_share=0.0)
+    names = {n.pitch: name for name, ns in tracks.items() for n in ns}
+    assert names[72] == "Synth Lead" and names[74] == "Synth Lead"
+    assert names[64] == "Synth Pad" and names[40] == OTHER
+    assert names[60] == "Synth Pad"  # a labelled note Basic Pitch missed is added
+    assert "Drums" not in tracks
+
+
+@pytest.mark.skipif(not ymt3_available(), reason="YourMT3+ not installed")
+def test_hybrid_splits_synths_into_instruments(neural_result):
+    names = [t.name for t in neural_result.tracks]
+    assert "Drums" in names and "Bass" in names
+    pitched = [t for t in neural_result.tracks if not t.is_drum and t.name != "Bass"]
+    assert pitched and sum(len(t.notes) for t in pitched) > 0

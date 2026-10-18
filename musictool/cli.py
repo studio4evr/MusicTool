@@ -1,6 +1,7 @@
 """Command line interface: ``musictool song.wav -o song.mid``."""
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -35,7 +36,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--onset-threshold", type=float, help="0-1, higher = fewer notes (default: tuned per stem)")
     parser.add_argument("--frame-threshold", type=float, help="0-1, higher = shorter notes (default: tuned per stem)")
     parser.add_argument("--min-note-ms", type=float, help="default: tuned per stem (50-80)")
-    parser.add_argument("--mono-engine", choices=["auto", "crepe", "pyin", "basic-pitch"], default="auto",
+    parser.add_argument("--synth-engine", choices=["auto", "hybrid", "layers", "yourmt3", "basic-pitch"], default="auto",
+                        help="synths: Basic Pitch notes split into instruments by YourMT3+ (hybrid), "
+                             "lead + pad layers, YourMT3+ alone, or Basic Pitch as one track")
+    parser.add_argument("--mt3-variant", choices=["moe-nops", "moe-ps", "ptf-ps"], default="moe-nops",
+                        help="YourMT3+ checkpoint for synth instrument labels")
+    parser.add_argument("--mt3-input", choices=["full", "no-drums"], default="no-drums",
+                        help="feed that model the full mix or the mix minus the drum stem")
+    parser.add_argument("--bass-mt3-variant", choices=["moe-nops", "moe-ps", "ptf-ps"], default="ptf-ps",
+                        help="YourMT3+ checkpoint for the bass (mono engine yourmt3)")
+    parser.add_argument("--mono-engine", choices=["auto", "yourmt3", "crepe", "pyin", "basic-pitch"], default="auto",
                         help="engine for monophonic bass/vocal lines")
     parser.add_argument("--drum-sensitivity", type=float, default=0.5, help="0-1, higher = more drum hits")
 
@@ -78,6 +88,10 @@ def main(argv: list[str] | None = None) -> int:
         drum_sensitivity=args.drum_sensitivity,
         drum_engine=args.drum_engine,
         mono_engine=args.mono_engine,
+        synth_engine=args.synth_engine,
+        mt3_variant=args.mt3_variant,
+        mt3_input=args.mt3_input,
+        bass_mt3_variant=args.bass_mt3_variant,
         stems_dir=out.parent if args.save_stems else None,
     )
 
@@ -94,7 +108,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.separate_tracks:
         for track in result.tracks:
-            path = out.with_name(f"{out.stem}_{track.name.lower()}.mid")
+            slug = re.sub(r"[^\w]+", "_", track.name.lower()).strip("_")  # "Bells / Mallets" -> bells_mallets
+            path = out.with_name(f"{out.stem}_{slug}.mid")
             result.write(path, [track.name])
             print(f"Wrote {path}")
     return 0

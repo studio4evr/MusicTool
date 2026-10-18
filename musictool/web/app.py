@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from ..drums import adtof_available
 from ..gpu import device
 from ..pipeline import DRUM_ENGINES, TranscriptionOptions, TranscriptionResult, resolve_engines, transcribe
+from ..mt3 import ymt3_available
 from ..pitch import crepe_available
 from ..separation import NEURAL_MODELS, neural_available
 
@@ -76,6 +77,7 @@ def info() -> dict:
         "separation_models": {k: label for k, (_, label) in NEURAL_MODELS.items()},
         "adtof": adtof_available(),
         "crepe": crepe_available(),
+        "yourmt3": ymt3_available(),
         "gpu": device() == "cuda",
         "defaults": asdict(resolve_engines(TranscriptionOptions())),
     }
@@ -87,6 +89,7 @@ async def create_job(
     separation: str = Form("auto"),
     drum_engine: str = Form("auto"),
     mono_engine: str = Form("auto"),
+    synth_engine: str = Form("auto"),
     bpm: float | None = Form(None),
     quantize: int = Form(16),
     drums: bool = Form(True),
@@ -111,10 +114,16 @@ async def create_job(
         raise HTTPException(400, "ADTOF is not installed on the server")
     if drum_engine in ("ensemble", "drumsep") and not neural_available():
         raise HTTPException(400, "DrumSep needs the GPU extras (run install.bat)")
-    if mono_engine not in ("auto", "crepe", "pyin", "basic-pitch"):
-        raise HTTPException(400, "mono_engine must be 'auto', 'crepe', 'pyin' or 'basic-pitch'")
+    if mono_engine not in ("auto", "yourmt3", "crepe", "pyin", "basic-pitch"):
+        raise HTTPException(400, "mono_engine must be 'auto', 'yourmt3', 'crepe', 'pyin' or 'basic-pitch'")
+    if mono_engine == "yourmt3" and not ymt3_available("ptf-ps"):
+        raise HTTPException(400, "The YourMT3+ bass model is not installed (run install.bat)")
     if mono_engine == "crepe" and not crepe_available():
         raise HTTPException(400, "CREPE is not installed on the server")
+    if synth_engine not in ("auto", "hybrid", "layers", "yourmt3", "basic-pitch"):
+        raise HTTPException(400, "synth_engine must be 'auto', 'hybrid', 'layers', 'yourmt3' or 'basic-pitch'")
+    if synth_engine in ("hybrid", "yourmt3") and not ymt3_available():
+        raise HTTPException(400, "YourMT3+ is not installed on the server (run install.bat)")
 
     job_id = uuid.uuid4().hex
     workdir = Path(tempfile.mkdtemp(prefix=f"musictool-{job_id[:8]}-"))
@@ -141,6 +150,7 @@ async def create_job(
         drum_sensitivity=drum_sensitivity,
         drum_engine=drum_engine,
         mono_engine=mono_engine,
+        synth_engine=synth_engine,
         stems_dir=workdir / "stems",
     )
     safe_name = re.sub(r"[^\w\-. ]", "_", Path(file.filename).stem)[:100] or "transcription"
@@ -194,7 +204,7 @@ def download_midi(job_id: str, track: str | None = None) -> StreamingResponse:
     if track:
         if track not in [t.name for t in job.result.tracks]:
             raise HTTPException(404, f"No track named {track!r}")
-        names, suffix = [track], f"_{track.lower()}"
+        names, suffix = [track], "_" + re.sub(r"[^\w]+", "_", track.lower()).strip("_")
     buf = io.BytesIO()
     job.result.to_midi(names).write(buf)
     buf.seek(0)

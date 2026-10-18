@@ -23,6 +23,8 @@ from .pitch import (
     transcribe_monophonic,
     transcribe_pitched,
 )
+from .instruments import lead_and_pad
+from .mt3 import ymt3_available
 from .separation import best_separation, separate, separation_label
 from .timing import estimate_tempo, grid_phase, grid_step, quantize
 
@@ -35,6 +37,27 @@ class TranscriptionOptions:
     separation: str = "auto"  # "auto", "hpss", or a neural model key from separation.NEURAL_MODELS
     drum_engine: str = "auto"  # "auto", "ensemble", "drumsep", "adtof" (neural) or "dsp"
     mono_engine: str = "auto"  # bass/vocal lines: "auto", "crepe" (neural), "pyin" or "basic-pitch"
+    # synths: "auto", "hybrid" (Basic Pitch notes split into instruments by YourMT3+),
+    # "yourmt3" (YourMT3+ alone) or "basic-pitch" (one Synths track)
+    synth_engine: str = "auto"
+    # YourMT3+ checkpoints (mt3.VARIANTS) and what they listen to ("full" mix or "no-drums").
+    # Measured on bench/ and against a commercial transcription of a real track
+    # (bench/compare_configs.py): the MoE model labels synth instruments best (synth F1
+    # 0.38 bench / 0.20 real), the pitch-shift-trained PTF model finds bass far better
+    # (bass F1 0.64 vs 0.34 for Basic Pitch on the real track, 0.80 vs 0.84 bench).
+    mt3_variant: str = "moe-nops"  # instrument labels for the synth split
+    mt3_input: str = "no-drums"
+    bass_mt3_variant: str = "ptf-ps"  # bass, when mono_engine == "yourmt3"
+    bass_mt3_input: str = "full"
+    # Hybrid: Basic Pitch notes YourMT3+ hears no instrument near. None = drop them,
+    # otherwise keep those at or above this velocity in an "Synths" track.
+    unlabelled_min_velocity: int | None = 0
+    # Clean-up of the synth tracks. None = auto (on for neural stems, off for HPSS), 0 = off.
+    # With the bass on its own track, synth notes below C3 mostly double it, and quiet
+    # Basic Pitch notes are mostly reverb tails / overtones. Dropping both: synth F1 0.37 ->
+    # 0.48 on bench/, 0.20 -> 0.26 against a commercial transcription of a real track.
+    synth_min_pitch: int | None = None  # 48 = C3
+    synth_min_velocity: int | None = None  # 40
     bpm: float | None = None  # None = detect automatically
     quantize: int | None = 16  # grid division, None/0 = off
     drums: bool = True
@@ -69,15 +92,24 @@ def resolve_engines(opts: TranscriptionOptions) -> TranscriptionOptions:
     separation = best_separation() if opts.separation == "auto" else opts.separation
     if opts.mono_engine != "auto":
         mono = opts.mono_engine
+    elif separation != "hpss" and ymt3_available(opts.bass_mt3_variant):
+        mono = "yourmt3"  # see bass_mt3_variant
     elif separation != "hpss":
         mono = "basic-pitch"  # on clean Demucs bass stems it beats CREPE (bench F1 0.85 vs 0.68)
     else:
         mono = "pyin"  # Basic Pitch makes octave errors on HPSS's leaky low end
+    if opts.synth_engine != "auto":
+        synth = opts.synth_engine
+    else:  # the hybrid needs clean stems to subtract the drums from the mix
+        synth = "hybrid" if separation != "hpss" and ymt3_available() else "basic-pitch"
     return replace(
         opts,
         separation=separation,
         drum_engine=_best_drum_engine() if opts.drum_engine == "auto" else opts.drum_engine,
         mono_engine=mono,
+        synth_engine=synth,
+        synth_min_pitch=(48 if separation != "hpss" else 0) if opts.synth_min_pitch is None else opts.synth_min_pitch,
+        synth_min_velocity=(40 if separation != "hpss" else 0) if opts.synth_min_velocity is None else opts.synth_min_velocity,
     )
 
 
@@ -177,7 +209,11 @@ def transcribe(path, options: TranscriptionOptions | None = None, progress: Prog
 
     neural = opts.separation != "hpss"
     report(f"Separating stems ({separation_label(opts.separation)})", 0.1)
-    stems, stem_sr = separate(y, sr, opts.separation, path=path)
+    if neural:
+        stems, stem_sr = _cached((_file_key(path), "stems", opts.separation),
+                                 lambda: separate(y, sr, opts.separation, path=path))
+    else:
+        stems, stem_sr = separate(y, sr, opts.separation, path=path)
     if opts.stems_dir:
         import soundfile as sf
 
@@ -189,13 +225,33 @@ def transcribe(path, options: TranscriptionOptions | None = None, progress: Prog
     if opts.drums and "drums" in stems:
         label, drum_fn = DRUM_ENGINES[opts.drum_engine]
         report(f"Transcribing drums ({label})", 0.4)
-        tracks.append(Track("Drums", 0, True, drum_fn(stems["drums"], stem_sr, opts.drum_sensitivity)))
+        drum_notes = _cached((_file_key(path), "drums", opts.separation, opts.drum_engine, opts.drum_sensitivity),
+                             lambda: drum_fn(stems["drums"], stem_sr, opts.drum_sensitivity))
+        tracks.append(Track("Drums", 0, True, [replace(n) for n in drum_notes]))
+
+    mt3_stems = stems if neural else None
+    labelled = bass_labelled = None
+    if opts.melodic and opts.synth_engine in ("hybrid", "yourmt3"):
+        report(f"Labelling instruments (YourMT3+ {opts.mt3_variant})", 0.45)
+        labelled = _run_mt3(path, mt3_stems, opts.mt3_variant, opts.mt3_input)
+    if opts.bass and opts.mono_engine == "yourmt3":
+        report(f"Transcribing bass (YourMT3+ {opts.bass_mt3_variant})", 0.5)
+        bass_labelled = _run_mt3(path, mt3_stems, opts.bass_mt3_variant, opts.bass_mt3_input)
 
     profiles = PROFILES["neural" if neural else "dsp"]
     wanted = [k for k in profiles if k in stems and (k != "bass" or opts.bass) and (k == "bass" or opts.melodic)]
+    if opts.synth_engine == "layers":
+        wanted = [k for k in wanted if k == "bass"]
     for i, key in enumerate(wanted):
         p = profiles[key]
         frac = 0.55 + 0.4 * i / len(wanted)
+        if key == "bass" and opts.mono_engine == "yourmt3":
+            mt3_bass = list(bass_labelled.get("Bass", []))
+            if _coverage(mt3_bass, stems[key], stem_sr) >= 0.3:
+                tracks.append(Track(p.name, p.program, False, mt3_bass))
+                continue
+            # YourMT3+ didn't call this sound a bass (e.g. a plain synth bass on a sparse
+            # track): fall back to Basic Pitch on the Demucs bass stem.
         min_ms = opts.min_note_ms if opts.min_note_ms is not None else p.min_note_ms
         if p.mono and opts.mono_engine in ("pyin", "crepe"):
             label = "CREPE neural net" if opts.mono_engine == "crepe" else "pYIN"
@@ -220,6 +276,23 @@ def transcribe(path, options: TranscriptionOptions | None = None, progress: Prog
         tracks.append(Track(p.name, p.program, False, notes))
     mono_tracks = {p.name for p in profiles.values() if p.mono}
 
+    if opts.melodic and opts.synth_engine == "layers" and "melodic" in stems:
+        report("Transcribing lead and pad layers (Basic Pitch)", 0.85)
+        for name, notes in lead_and_pad(stems["melodic"], stem_sr).items():
+            tracks.append(Track(name, 81 if name == "Synth Lead" else 89, False, notes))
+        mono_tracks = ({"Bass"} & mono_tracks) | {"Synth Lead"}
+    if opts.melodic and opts.synth_engine in ("hybrid", "yourmt3"):
+        report("Splitting synths by instrument", 0.9)
+        tracks = _split_synths_by_instrument(tracks, labelled, opts.synth_engine, opts.unlabelled_min_velocity)
+        mono_tracks = {"Bass"} & mono_tracks
+
+    if opts.synth_min_pitch or opts.synth_min_velocity:
+        for t in tracks:
+            if t.is_drum or t.name == "Bass":
+                continue
+            t.notes = [n for n in t.notes if n.pitch >= opts.synth_min_pitch and n.velocity >= opts.synth_min_velocity]
+        tracks = [t for t in tracks if t.is_drum or t.name == "Bass" or t.notes]
+
     bass_track = next((t for t in tracks if t.name == "Bass"), None)
     if bass_track is not None and not neural:  # neural stems don't leak bass harmonics
         for track in tracks:
@@ -238,5 +311,89 @@ def transcribe(path, options: TranscriptionOptions | None = None, progress: Prog
                 track.notes = make_monophonic(track.notes)
 
     report("Done", 1.0)
-    engines = {"separation": opts.separation, "drums": opts.drum_engine, "bass": opts.mono_engine, "synths": "basic-pitch"}
+    engines = {
+        "separation": opts.separation,
+        "drums": opts.drum_engine,
+        "bass": opts.mono_engine,
+        "synths": opts.synth_engine if opts.melodic else "-",
+    }
     return TranscriptionResult(tracks=tracks, bpm=bpm, duration=duration, engines=engines)
+
+
+SYNTH_SOURCE_TRACKS = ("Synths", "Vocals")
+
+
+def _coverage(notes: list[Note], stem, sr: int, floor_db: float = -30.0) -> float:
+    """Share of the time `stem` is audible (within floor_db of its loud level) that has a note."""
+    import librosa
+    import numpy as np
+
+    hop = 1024
+    rms = librosa.feature.rms(y=stem, frame_length=2 * hop, hop_length=hop)[0]
+    db = 20 * np.log10(rms + 1e-9)
+    audible = db > np.percentile(db, 95) + floor_db
+    if not audible.any():
+        return 1.0
+    active = np.zeros_like(audible)
+    for n in notes:
+        active[int(n.start * sr / hop): int(n.end * sr / hop) + 1] = True
+    return float((audible & active).sum() / audible.sum())
+
+
+_cache: dict = {}
+
+
+def _cached(key, fn):
+    """Memoise the slow neural steps per (file, mtime, settings), so re-running a
+    file with other options (web UI, benchmarks) skips separation and YourMT3+."""
+    if key not in _cache:
+        if len(_cache) >= 12:
+            _cache.pop(next(iter(_cache)))
+        _cache[key] = fn()
+    return _cache[key]
+
+
+def _file_key(path) -> tuple:
+    p = Path(path).resolve()
+    return (str(p), p.stat().st_mtime_ns)
+
+
+def _run_mt3(path, stems: dict | None, variant: str, source: str) -> dict[str, list[Note]]:
+    source = source if stems is not None else "full"
+    key = (_file_key(path), "mt3", variant, source)
+    return {k: list(v) for k, v in _cached(key, lambda: _run_mt3_uncached(path, stems, variant, source)).items()}
+
+
+def _run_mt3_uncached(path, stems: dict | None, variant: str, source: str) -> dict[str, list[Note]]:
+    """YourMT3+ on the full mix, or on the mix minus the Demucs drum stem."""
+    import librosa
+
+    from .mt3 import transcribe_mt3
+    from .separation import NEURAL_SR
+
+    mix, _ = librosa.load(str(path), sr=NEURAL_SR, mono=True)
+    if source == "no-drums" and stems is not None and "drums" in stems:
+        n = min(len(mix), len(stems["drums"]))
+        mix = mix[:n] - stems["drums"][:n]
+    return transcribe_mt3(mix, NEURAL_SR, variant=variant)
+
+
+def _split_synths_by_instrument(tracks: list[Track], labelled: dict[str, list[Note]], engine: str,
+                                unlabelled_min_velocity: int | None = 0) -> list[Track]:
+    """Replace the Synths / Vocals tracks with one track per instrument."""
+    from .instruments import OTHER, assign_instruments
+    from .mt3 import TRACK_PROGRAMS
+
+    kept = [t for t in tracks if t.name not in SYNTH_SOURCE_TRACKS]
+    if engine == "yourmt3":
+        groups = {k: v for k, v in labelled.items() if k not in ("Drums", "Bass")}
+    else:
+        base = [n for t in tracks if t.name in SYNTH_SOURCE_TRACKS for n in t.notes]
+        groups = assign_instruments(base, labelled)
+        rest = groups.pop(OTHER, [])
+        if unlabelled_min_velocity is not None:
+            rest = [n for n in rest if n.velocity >= unlabelled_min_velocity]
+            if rest:
+                groups[OTHER] = rest
+    ordered = sorted(groups.items(), key=lambda kv: (kv[0] == OTHER, -len(kv[1])))
+    return kept + [Track(name, TRACK_PROGRAMS.get(name, 81), False, notes) for name, notes in ordered]

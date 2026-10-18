@@ -53,9 +53,19 @@
         <label>Tempo (BPM)
           <input id="bpm" type="number" min="40" max="250" step="0.01" placeholder="auto">
         </label>
+        <label>Synth engine
+          <select id="synth_engine">
+            <option value="auto" selected>Auto (best installed)</option>
+            <option value="hybrid" data-needs="yourmt3">Split by instrument: Basic Pitch + YourMT3+ (best)</option>
+            <option value="layers">Lead + pad layers (Basic Pitch)</option>
+            <option value="yourmt3" data-needs="yourmt3">YourMT3+ only</option>
+            <option value="basic-pitch">Basic Pitch, one Synths track</option>
+          </select>
+        </label>
         <label>Bass engine
           <select id="mono_engine">
             <option value="auto" selected>Auto (best installed)</option>
+            <option value="yourmt3" data-needs="yourmt3">YourMT3+ (best)</option>
             <option value="crepe" data-needs="crepe">CREPE neural net</option>
             <option value="pyin">pYIN (no GPU)</option>
             <option value="basic-pitch">Basic Pitch neural net</option>

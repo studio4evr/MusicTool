@@ -61,7 +61,8 @@ def score(result, truth):
         "snare": onset_f(np.array(truth["snare"]), hits({SNARE_NOTE}), window=0.05)[0],
         "hihat": onset_f(np.array(sorted(set(truth["hat"]))), hits(HAT_NOTES), window=0.05)[0],
         "bass": note_f1(truth["bass"], tracks.get("Bass", [])),
-        "synths": note_f1(truth["synths"], tracks.get("Synths", [])),
+        # every pitched track except Bass: instrument-split output has many synth tracks
+        "synths": note_f1(truth["synths"], [n for t in result.tracks if not t.is_drum and t.name != "Bass" for n in t.notes]),
     }
     out["mean"] = float(np.mean(list(out.values())))
     return out

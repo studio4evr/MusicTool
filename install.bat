@@ -50,6 +50,9 @@ rem Older installs used onnxruntime-gpu, which overwrites onnxruntime; remove it
 "%VPY%" -m pip uninstall -y onnxruntime-gpu >nul 2>&1
 "%VPY%" -m pip install -e ".[gpu]" resampy mir_eval scikit-learn -c "%CONSTRAINTS%" --extra-index-url %TORCH_INDEX% || goto :fail
 "%VPY%" -c "import torch; print('CUDA available:', torch.cuda.is_available())"
+echo Downloading the YourMT3+ instrument and bass models, about 1.1 GB...
+"%VPY%" -m musictool.mt3 --download --variant moe-nops || goto :fail
+"%VPY%" -m musictool.mt3 --download --variant ptf-ps || goto :fail
 goto :done
 
 :cpu

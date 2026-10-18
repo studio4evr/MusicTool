@@ -30,6 +30,13 @@ gpu = [
     "audio-separator[cpu]>=0.47",
     "audioread",  # audio-separator imports it; librosa 1.0 no longer pulls it in
     "torchcrepe",
+    # YourMT3+ (code + checkpoint fetched by `python -m musictool.mt3 --download`)
+    "lightning>=2.2.1",
+    "transformers==4.45.1",  # YourMT3 subclasses T5 internals; the version its authors pin
+    "einops",
+    "deprecated",
+    "mido",
+    "huggingface_hub",
     # pinned commit, as a zip so git isn't required
     "adtof-pytorch @ https://github.com/xavriley/ADTOF-pytorch/archive/85c192e78f716ea0b111cc8a5ee4a8f6a3a4f8a9.zip",
 ]

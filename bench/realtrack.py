@@ -90,12 +90,13 @@ def score(stems: dict, midi_path: Path) -> dict[str, float]:
     drums = next((i.notes for i in pm.instruments if i.is_drum), [])
     out = {}
     out["drum_R"], out["drum_P"] = drum_scores(stems["drums"], np.array([n.start for n in drums]))
-    for name, stem_keys, track_names in (
-        ("bass", ["bass"], ["Bass"]),
-        ("synth", ["melodic", "vocals"], ["Synths", "Vocals"]),
+    pitched = [i for i in pm.instruments if not i.is_drum]
+    for name, stem_keys, insts in (
+        ("bass", ["bass"], [i for i in pitched if i.name == "Bass"]),
+        ("synth", ["melodic", "vocals"], [i for i in pitched if i.name != "Bass"]),  # every instrument track
     ):
         stem = sum(stems[k] for k in stem_keys)
-        notes = [n for t in track_names for n in tracks.get(t, [])]
+        notes = [n for i in insts for n in i.notes]
         aud, act = audible(stem, n_frames), note_mask(notes, n_frames)
         out[f"{name}_R"] = float((aud & act).sum() / max(1, aud.sum()))
         out[f"{name}_P"] = float((aud & act).sum() / max(1, act.sum()))
