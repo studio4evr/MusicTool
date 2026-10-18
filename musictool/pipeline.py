@@ -71,6 +71,8 @@ class TranscriptionOptions:
     # of a real track (frame 0.27 -> 0.47), bench/ synths 0.53 -> 0.61.
     pad_layer: bool = True
     pad_min_pitch: int = 36  # lowest pad-chord note (the synth clean-up floor does not apply to pads)
+    pad_share: float = 0.5  # a pitch must sound through this share of the bar
+    pad_thresholds: tuple[float, float] = (0.3, 0.2)  # Basic Pitch onset / frame thresholds for pads (bench/ 0.59 -> 0.62)
     # YourMT3+ bass: fill its silent gaps with Basic Pitch notes from these sources
     # ("stem" = the Demucs bass stem, "low-synth" = synth notes below synth_min_pitch).
     bass_fill: tuple[str, ...] = ()
@@ -337,7 +339,8 @@ def transcribe(path, options: TranscriptionOptions | None = None, progress: Prog
         groups = vote_synths(base, passes, opts.vote_min, durations=raw, sustain_rescue=opts.vote_sustain_rescue)
         if opts.pad_layer and "melodic" in stems:
             report("Charting pads bar by bar", 0.85)
-            groups = _with_bar_pads(groups, tracks, stems["melodic"], stem_sr, bpm, opts.pad_min_pitch)
+            groups = _with_bar_pads(groups, tracks, stems["melodic"], stem_sr, bpm, opts.pad_min_pitch,
+                                    opts.pad_share, opts.pad_thresholds)
         tracks = [t for t in tracks if t.name not in SYNTH_SOURCE_TRACKS] + _instrument_tracks(groups)
         mono_tracks = {"Bass"} & mono_tracks
     if opts.melodic and opts.synth_engine in ("hybrid", "yourmt3"):
@@ -532,7 +535,7 @@ def _split_synths_by_instrument(tracks: list[Track], labelled: dict[str, list[No
 
 
 def _with_bar_pads(groups: dict[str, list[Note]], tracks: list[Track], stem, sr: int, bpm: float,
-                   min_pitch: int = 48) -> dict[str, list[Note]]:
+                   min_pitch: int = 48, share: float = 0.5, thresholds=(0.25, 0.15)) -> dict[str, list[Note]]:
     """Add bar-chord pads as "Synth Pad"; drop voted notes they already cover."""
     from .instruments import bar_chord_pads, find_downbeat
 
@@ -540,7 +543,7 @@ def _with_bar_pads(groups: dict[str, list[Note]], tracks: list[Track], stem, sr:
     beat = 60.0 / bpm
     phase = grid_phase([n.start for n in drums], beat) if drums else 0.0
     downbeat = find_downbeat(stem, sr, bpm, phase, [n.start for n in drums if n.pitch == 38])
-    pads = bar_chord_pads(stem, sr, bpm, downbeat, min_pitch=min_pitch)
+    pads = bar_chord_pads(stem, sr, bpm, downbeat, share=share, min_pitch=min_pitch, thresholds=thresholds)
 
     def covered(n: Note) -> bool:
         return any(p.pitch == n.pitch and p.start - 0.05 <= n.start and n.end <= p.end + 0.3 and n.end - n.start > 0.5

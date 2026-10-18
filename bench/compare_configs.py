@@ -24,6 +24,11 @@ BASE = dict(separation="demucs-ft", drum_engine="ensemble")
 CONFIGS = {
     "default (auto)": dict(),
     "default, drop unlabelled": dict(unlabelled_min_velocity=None),
+    "pads share 0.3": dict(pad_share=0.3),
+    "pads share 0.7": dict(pad_share=0.7),
+    "pads thr 0.3/0.2": dict(pad_thresholds=(0.3, 0.2)),
+    "pads thr 0.3/0.2 share 0.3": dict(pad_thresholds=(0.3, 0.2), pad_share=0.3),
+    "pads thr 0.2/0.12 share 0.7": dict(pad_thresholds=(0.2, 0.12), pad_share=0.7),
     "vote, fine-tuned moe": dict(vote_passes=(("moe-nops-edm", "no-drums"), ("moe-nops-edm", "full"), ("moe-ps", "no-drums"), ("moe-ps", "full"))),
     "vote, fine-tuned moe added": dict(vote_passes=(("moe-nops", "no-drums"), ("moe-nops", "full"), ("moe-ps", "no-drums"), ("moe-ps", "full"), ("moe-nops-edm", "no-drums"), ("moe-nops-edm", "full")), vote_min=3),
     "vote 2-of-5": dict(synth_engine="vote"),
