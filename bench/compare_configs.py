@@ -24,6 +24,18 @@ BASE = dict(separation="demucs-ft", drum_engine="ensemble")
 CONFIGS = {
     "default (auto)": dict(),
     "default, drop unlabelled": dict(unlabelled_min_velocity=None),
+    "bass fill: stem": dict(bass_fill=("stem",)),
+    "bass fill: low synth": dict(bass_fill=("low-synth",)),
+    "bass fill: both": dict(bass_fill=("stem", "low-synth")),
+    "no MT3 extras": dict(hybrid_add_missing=False),
+    "synth vel from 50": dict(synth_min_velocity=50),
+    "synth vel 50, no extras": dict(synth_min_velocity=50, hybrid_add_missing=False),
+    "+ moe full-mix pass": dict(extra_label_passes=(("moe-nops", "full"),)),
+    "+ ptf full-mix pass": dict(extra_label_passes=(("ptf-ps", "full"),)),
+    "+ moe-ps no-drums pass": dict(extra_label_passes=(("moe-ps", "no-drums"),)),
+    "+ moe full + ptf full": dict(extra_label_passes=(("moe-nops", "full"), ("ptf-ps", "full"))),
+    "grid 1/32": dict(quantize=32),
+    "grid off": dict(quantize=0),
     "synth pitch from C3": dict(synth_min_pitch=48),
     "synth velocity from 40": dict(synth_min_velocity=40),
     "synth C3 + vel 40": dict(synth_min_pitch=48, synth_min_velocity=40),
@@ -64,7 +76,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         bench_wav = Path(tmp) / "bench.wav"
         sf.write(bench_wav, y, sr)
-        bench = {name: benchmark.score(transcribe(bench_wav, TranscriptionOptions(quantize=None, **BASE, **CONFIGS[name])), truth)
+        bench = {name: benchmark.score(transcribe(bench_wav, TranscriptionOptions(**{**BASE, **CONFIGS[name], "quantize": None})), truth)
                  for name in names}
 
     print(f"\n{'config':28}| vs reference: {'kick':>5} {'snare':>5} {'hihat':>5} {'bass':>5} {'synth':>5} {'s_pc':>5} {'frame':>5}"

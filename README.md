@@ -1,9 +1,9 @@
 # MusicTool
 
 AI transcription of **electronic music audio → multi-track MIDI**.
-Drop in a track (WAV, MP3, FLAC, OGG, AIFF) and get a `.mid` file with separate
-**Drums**, **Bass** and **Synths** tracks, tempo-synced and quantised to the grid,
-ready to drag into Ableton, FL Studio, Logic, Bitwig, and so on.
+Drop in a track (WAV, MP3, FLAC, OGG, AIFF) and get a `.mid` file with a **Drums** track,
+a **Bass** track and **one track per synth** (lead, pad, pluck, strings, ...), tempo-synced
+and quantised to the grid, ready to drag into Ableton, FL Studio, Logic, Bitwig, and so on.
 
 ![web app](docs/screenshot.png)
 
@@ -16,8 +16,8 @@ falls back to fast CPU methods. **Auto**, the default, picks the best engine tha
 |---|---|---|
 | Stem separation | **Demucs v4 fine-tuned** (Meta), giving drums / bass / other / vocals stems | Harmonic/percussive separation + band split |
 | Drums | **DrumSep** (MDX23C) splits the drum stem into kick / snare / toms / hi-hat / ride / crash, and onsets are detected on each piece. **ADTOF** (CNN + bi-GRU drum transcriber) then adds any hits DrumSep missed | Multi-band transient classifier |
-| Bass | **Spotify Basic Pitch**, one note at a time (**CREPE** is available as an option) | pYIN |
-| Synths / chords / leads | **Spotify Basic Pitch** (polyphonic CNN, run via ONNX) on the "other" and vocal stems, down to 55 Hz | the same, above 110 Hz |
+| Bass | **YourMT3+** (PTF pitch-shift checkpoint) on the full mix, falling back to Basic Pitch on the bass stem when it hears no bass | pYIN |
+| Synths / chords / leads | **Basic Pitch** notes from the "other" and vocal stems, split into instrument tracks with **YourMT3+** (MoE checkpoint) labels, plus the notes YourMT3+ hears that Basic Pitch misses. Notes below C3 (the bass's job) and quiet tails are dropped | Basic Pitch, one Synths track |
 | Tempo | Beat tracking, then a beat-grid fit that also corrects 2:3 and 2:1 tempo errors | the same |
 | Quantisation | Grid phase is taken from the drum hits; notes snap to 1/8, 1/16 or 1/32 | the same |
 
@@ -31,17 +31,25 @@ a delayed arpeggio lead, reverb and saturation. Each engine combination is then 
 | Engines | kick | snare | hi-hat | bass | synths | mean |
 |---|---|---|---|---|---|---|
 | CPU fallback (DSP / DSP / pYIN) | 0.95 | 0.65 | 0.43 | 0.28 | 0.03 | 0.47 |
-| Demucs + ADTOF + CREPE | 0.99 | 0.89 | 0.93 | 0.81 | 0.38 | 0.80 |
-| **Demucs + DrumSep/ADTOF + Basic Pitch (GPU default)** | 0.96 | 0.94 | 0.92 | 0.84 | 0.38 | **0.81** |
+| Demucs + DrumSep/ADTOF + Basic Pitch | 0.96 | 0.94 | 0.92 | 0.84 | 0.38 | 0.81 |
+| **+ YourMT3+ bass and instrument split (GPU default)** | 0.96 | 0.94 | 0.92 | 0.80 | 0.50 | **0.83** |
 
-`python bench/realtrack.py song.wav out.mid ...` scores transcriptions of a *real* track against
-its own separated stems: drum-hit recall, and how much of the time each stem is audible that the
-MIDI covers. On an Aphex Twin track, the GPU default finds 100% of drum hits (ADTOF alone labelled
-half the snares as hats) and covers 94% of the audible synth parts (up from 50% with the 110 Hz floor).
+**Against a commercial transcription.** `python bench/reference.py reference.mid ours.mid ...`
+scores output against a reference MIDI of the same track, after aligning tempo and offset.
+Against a commercial service's transcription of an Aphex Twin track (F1, 60 ms):
 
-The synth track is still the weakest part: sidechain pumping and delay echoes confuse note onsets.
-A 5-minute track takes about 110 s on an RTX 2070 Super. The separation models (~600 MB)
-download on first use to `%LOCALAPPDATA%\musictool\models`.
+| | kick | snare/clap | hi-hat | bass | synths |
+|---|---|---|---|---|---|
+| First version (CPU engines) | 0.78 | 0.69 | 0.42 | 0.19 | 0.13 |
+| **GPU default** | 0.96 | 0.95 | 0.94 | 0.64 | ~0.25 |
+
+Drums match the reference closely. Bass mostly agrees. Synths are the weak point. We find about a
+third of the reference's synth notes, and add many it doesn't have (dense textures, delays, reverb).
+YourMT3+ decoding on the GPU is not bit-exact, so synth scores vary by about ±0.03 between runs.
+`python bench/compare_configs.py song.wav reference.mid` re-runs this comparison for each engine setting.
+
+A 5-minute track takes about 3 minutes on an RTX 2070 Super. The models (~1.7 GB) live in
+`%LOCALAPPDATA%\musictool\models`.
 
 ## Windows quick start
 

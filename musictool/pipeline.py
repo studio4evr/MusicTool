@@ -52,6 +52,12 @@ class TranscriptionOptions:
     # Hybrid: Basic Pitch notes YourMT3+ hears no instrument near. None = drop them,
     # otherwise keep those at or above this velocity in an "Synths" track.
     unlabelled_min_velocity: int | None = 0
+    hybrid_add_missing: bool = True  # hybrid: also add the YourMT3+ notes Basic Pitch missed
+    # extra YourMT3+ passes, (variant, input), merged into the instrument labels
+    extra_label_passes: tuple[tuple[str, str], ...] = ()
+    # YourMT3+ bass: fill its silent gaps with Basic Pitch notes from these sources
+    # ("stem" = the Demucs bass stem, "low-synth" = synth notes below synth_min_pitch).
+    bass_fill: tuple[str, ...] = ()
     # Clean-up of the synth tracks. None = auto (on for neural stems, off for HPSS), 0 = off.
     # With the bass on its own track, synth notes below C3 mostly double it, and quiet
     # Basic Pitch notes are mostly reverb tails / overtones. Dropping both: synth F1 0.37 ->
@@ -234,10 +240,13 @@ def transcribe(path, options: TranscriptionOptions | None = None, progress: Prog
     if opts.melodic and opts.synth_engine in ("hybrid", "yourmt3"):
         report(f"Labelling instruments (YourMT3+ {opts.mt3_variant})", 0.45)
         labelled = _run_mt3(path, mt3_stems, opts.mt3_variant, opts.mt3_input)
+        for variant, source in opts.extra_label_passes:
+            labelled = _merge_labels(labelled, _run_mt3(path, mt3_stems, variant, source))
     if opts.bass and opts.mono_engine == "yourmt3":
         report(f"Transcribing bass (YourMT3+ {opts.bass_mt3_variant})", 0.5)
         bass_labelled = _run_mt3(path, mt3_stems, opts.bass_mt3_variant, opts.bass_mt3_input)
 
+    mt3_bass_track = None
     profiles = PROFILES["neural" if neural else "dsp"]
     wanted = [k for k in profiles if k in stems and (k != "bass" or opts.bass) and (k == "bass" or opts.melodic)]
     if opts.synth_engine == "layers":
@@ -248,7 +257,12 @@ def transcribe(path, options: TranscriptionOptions | None = None, progress: Prog
         if key == "bass" and opts.mono_engine == "yourmt3":
             mt3_bass = list(bass_labelled.get("Bass", []))
             if _coverage(mt3_bass, stems[key], stem_sr) >= 0.3:
-                tracks.append(Track(p.name, p.program, False, mt3_bass))
+                if "stem" in opts.bass_fill:
+                    stem_bass = transcribe_pitched(stems[key], stem_sr, min_note_ms=p.min_note_ms, min_freq=p.fmin,
+                                                   max_freq=p.fmax, monophonic=True)
+                    mt3_bass += _in_gaps(stem_bass, mt3_bass)
+                tracks.append(Track(p.name, p.program, False, sorted(mt3_bass, key=lambda n: n.start)))
+                mt3_bass_track = tracks[-1]
                 continue
             # YourMT3+ didn't call this sound a bass (e.g. a plain synth bass on a sparse
             # track): fall back to Basic Pitch on the Demucs bass stem.
@@ -283,15 +297,22 @@ def transcribe(path, options: TranscriptionOptions | None = None, progress: Prog
         mono_tracks = ({"Bass"} & mono_tracks) | {"Synth Lead"}
     if opts.melodic and opts.synth_engine in ("hybrid", "yourmt3"):
         report("Splitting synths by instrument", 0.9)
-        tracks = _split_synths_by_instrument(tracks, labelled, opts.synth_engine, opts.unlabelled_min_velocity)
+        tracks = _split_synths_by_instrument(tracks, labelled, opts.synth_engine, opts.unlabelled_min_velocity,
+                                             opts.hybrid_add_missing)
         mono_tracks = {"Bass"} & mono_tracks
 
     if opts.synth_min_pitch or opts.synth_min_velocity:
+        low_synth = []
         for t in tracks:
             if t.is_drum or t.name == "Bass":
                 continue
+            low_synth += [n for n in t.notes if n.pitch < opts.synth_min_pitch and n.velocity >= opts.synth_min_velocity]
             t.notes = [n for n in t.notes if n.pitch >= opts.synth_min_pitch and n.velocity >= opts.synth_min_velocity]
         tracks = [t for t in tracks if t.is_drum or t.name == "Bass" or t.notes]
+        if mt3_bass_track is not None and "low-synth" in opts.bass_fill:
+            # A bass line Demucs filed under "other" (common with synth basses).
+            mt3_bass_track.notes = sorted(mt3_bass_track.notes + _in_gaps(low_synth, mt3_bass_track.notes),
+                                          key=lambda n: n.start)
 
     bass_track = next((t for t in tracks if t.name == "Bass"), None)
     if bass_track is not None and not neural:  # neural stems don't leak bass harmonics
@@ -321,6 +342,38 @@ def transcribe(path, options: TranscriptionOptions | None = None, progress: Prog
 
 
 SYNTH_SOURCE_TRACKS = ("Synths", "Vocals")
+
+
+def _merge_labels(a: dict[str, list[Note]], b: dict[str, list[Note]], tol: float = 0.05) -> dict[str, list[Note]]:
+    """Union of two YourMT3+ passes; a note of `b` is skipped if `a` has the same pitch within tol."""
+    import bisect
+
+    flat = sorted((n for k, v in a.items() if k not in ("Drums", "Bass") for n in v), key=lambda n: n.start)
+    starts = [n.start for n in flat]
+    out = {k: list(v) for k, v in a.items()}
+    for k, v in b.items():
+        if k in ("Drums", "Bass"):
+            continue
+        for n in v:
+            lo, hi = bisect.bisect_left(starts, n.start - tol), bisect.bisect_right(starts, n.start + tol)
+            if not any(flat[i].pitch == n.pitch for i in range(lo, hi)):
+                out.setdefault(k, []).append(n)
+    return out
+
+
+def _in_gaps(candidates: list[Note], line: list[Note], margin: float = 0.05) -> list[Note]:
+    """Candidates that start while no note of `line` is sounding (+- margin)."""
+    import bisect
+
+    line = sorted(line, key=lambda n: n.start)
+    starts = [n.start for n in line]
+    out = []
+    for c in candidates:
+        i = bisect.bisect_right(starts, c.start + margin)
+        sounding = any(line[j].start - margin <= c.start <= line[j].end + margin for j in range(max(0, i - 8), i))
+        if not sounding:
+            out.append(c)
+    return out
 
 
 def _coverage(notes: list[Note], stem, sr: int, floor_db: float = -30.0) -> float:
@@ -379,7 +432,7 @@ def _run_mt3_uncached(path, stems: dict | None, variant: str, source: str) -> di
 
 
 def _split_synths_by_instrument(tracks: list[Track], labelled: dict[str, list[Note]], engine: str,
-                                unlabelled_min_velocity: int | None = 0) -> list[Track]:
+                                unlabelled_min_velocity: int | None = 0, add_missing: bool = True) -> list[Track]:
     """Replace the Synths / Vocals tracks with one track per instrument."""
     from .instruments import OTHER, assign_instruments
     from .mt3 import TRACK_PROGRAMS
@@ -389,7 +442,7 @@ def _split_synths_by_instrument(tracks: list[Track], labelled: dict[str, list[No
         groups = {k: v for k, v in labelled.items() if k not in ("Drums", "Bass")}
     else:
         base = [n for t in tracks if t.name in SYNTH_SOURCE_TRACKS for n in t.notes]
-        groups = assign_instruments(base, labelled)
+        groups = assign_instruments(base, labelled, add_missing=add_missing)
         rest = groups.pop(OTHER, [])
         if unlabelled_min_velocity is not None:
             rest = [n for n in rest if n.velocity >= unlabelled_min_velocity]

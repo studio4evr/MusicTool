@@ -143,8 +143,12 @@ def score(ref, est, end):
     rd, rb, rs = ref
     ed, eb, es = est
     out = {}
+    def dedupe(t, gap=0.03):  # e.g. a snare and a clap on the same hit = one "snare" onset
+        t = np.sort(t)
+        return t[np.concatenate([[True], np.diff(t) > gap])] if len(t) else t
+
     for cls in ("kick", "snare", "hihat", "cymbal", "perc"):
-        r, e = rd.get(cls, np.array([])), ed.get(cls, np.array([]))
+        r, e = dedupe(rd.get(cls, np.array([]))), dedupe(ed.get(cls, np.array([])))
         out[cls] = onset_f(r, e, window=TOL)[0] if len(r) and len(e) else 0.0
     out["bass"] = note_f1(rb, eb)
     out["bass_pc"] = note_f1(rb, eb, pitch_class=True)
