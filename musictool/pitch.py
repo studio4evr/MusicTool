@@ -46,9 +46,9 @@ def transcribe_pitched(
     if np.max(np.abs(y)) < 1e-4:
         return []
 
+    model = _load_model()  # first: silences basic_pitch's import-time warnings
     from basic_pitch.inference import predict
 
-    model = _load_model()
     fd, tmp_path = tempfile.mkstemp(suffix=".wav")
     os.close(fd)
     try:
@@ -109,22 +109,35 @@ def transcribe_monophonic(
     max_freq: float,
     min_note_ms: float = 80.0,
     hop_length: int = 256,
+    engine: str = "pyin",
 ) -> list[Note]:
-    """Transcribe a single-voice line (bass, vocal) with probabilistic YIN.
+    """Transcribe a single-voice line (bass, vocal) with an f0 tracker.
 
-    pYIN is an HMM-smoothed f0 tracker; on monophonic synth bass it is more
-    accurate than Basic Pitch, which tends to make octave errors below ~100 Hz.
+    ``engine``:
+      * ``pyin``  - HMM-smoothed probabilistic YIN (no neural net, CPU).
+      * ``crepe`` - CREPE, a CNN f0 estimator (torchcrepe, GPU if available);
+                    more robust on distorted / acid / detuned basses.
+
+    Both beat Basic Pitch on low monophonic lines, where it makes octave errors.
     """
     import librosa
     from scipy.signal import find_peaks
 
     if np.max(np.abs(y)) < 1e-4:
         return []
+    if sr != 22050:
+        y, sr = librosa.resample(y, orig_sr=sr, target_sr=22050), 22050
+    n_frames = 1 + len(y) // hop_length
 
-    f0, voiced, _ = librosa.pyin(
-        y, fmin=min_freq, fmax=max_freq, sr=sr, frame_length=2048, hop_length=hop_length
-    )
-    midi = np.where(voiced, np.round(librosa.hz_to_midi(np.nan_to_num(f0, nan=1.0))), -1).astype(int)
+    if engine == "crepe":
+        midi = _crepe_midi(y, sr, min_freq, max_freq, n_frames, hop_length / sr)
+    elif engine == "pyin":
+        f0, voiced, _ = librosa.pyin(
+            y, fmin=min_freq, fmax=max_freq, sr=sr, frame_length=2048, hop_length=hop_length
+        )
+        midi = np.where(voiced, np.round(librosa.hz_to_midi(np.nan_to_num(f0, nan=1.0))), -1).astype(int)
+    else:
+        raise ValueError(f"Unknown monophonic engine: {engine}")
     rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=hop_length)[0][: len(midi)]
     peak_rms = float(rms.max()) or 1.0
 
@@ -152,6 +165,52 @@ def transcribe_monophonic(
         velocity = int(np.clip(round(30 + 97 * level), 1, 127))
         notes.append(Note(start * frame_s, (end + 1) * frame_s, int(pitch), velocity))
     return notes
+
+
+CREPE_SR = 16000
+CREPE_HOP = 160  # 10 ms
+
+
+def crepe_available() -> bool:
+    try:
+        import torchcrepe  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _crepe_midi(y, sr, fmin, fmax, n_frames, frame_s, voicing_threshold: float = 0.5) -> np.ndarray:
+    """Per-frame MIDI pitch (-1 = unvoiced) from CREPE, resampled onto our frame grid."""
+    import librosa
+    import torch
+    import torchcrepe
+
+    from .gpu import device
+
+    audio = torch.from_numpy(librosa.resample(y, orig_sr=sr, target_sr=CREPE_SR)).float()[None]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        f0, periodicity = torchcrepe.predict(
+            audio,
+            CREPE_SR,
+            CREPE_HOP,
+            fmin=max(fmin, 32.0),  # CREPE's lowest bin is ~32 Hz
+            fmax=fmax,
+            model="full",
+            # Not viterbi: with fmin/fmax set, torchcrepe's viterbi path returns ~0
+            # periodicity everywhere, so nothing would count as voiced.
+            decoder=torchcrepe.decode.weighted_argmax,
+            return_periodicity=True,
+            batch_size=1024,
+            device=device(),
+        )
+    periodicity = torchcrepe.filter.median(periodicity, 3)
+    f0 = torchcrepe.filter.median(f0, 5)  # weighted_argmax is unsmoothed; kill one-frame jumps
+    f0, periodicity = f0[0].cpu().numpy(), periodicity[0].cpu().numpy()
+    crepe_midi = np.where(periodicity >= voicing_threshold, np.round(librosa.hz_to_midi(f0)), -1).astype(int)
+
+    idx = np.minimum(np.round(np.arange(n_frames) * frame_s / (CREPE_HOP / CREPE_SR)).astype(int), len(crepe_midi) - 1)
+    return crepe_midi[idx]
 
 
 def merge_fragments(notes: list[Note], max_gap: float = 0.03) -> list[Note]:

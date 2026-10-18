@@ -27,8 +27,17 @@
       <div class="grid">
         <label>Stem separation
           <select id="separation">
-            <option value="hpss">Fast (harmonic/percussive DSP)</option>
-            <option value="demucs">Demucs AI (best quality, slower)</option>
+            <option value="auto" selected>Auto (best installed)</option>
+            <option value="demucs-ft" data-needs="neural_separation">Demucs v4 fine-tuned (best)</option>
+            <option value="demucs" data-needs="neural_separation">Demucs v4 (faster)</option>
+            <option value="hpss">Fast DSP (no GPU)</option>
+          </select>
+        </label>
+        <label>Drum engine
+          <select id="drum_engine">
+            <option value="auto" selected>Auto (best installed)</option>
+            <option value="adtof" data-needs="adtof">ADTOF neural net</option>
+            <option value="dsp">DSP onset classifier</option>
           </select>
         </label>
         <label>Quantise
@@ -44,8 +53,10 @@
         </label>
         <label>Bass engine
           <select id="mono_engine">
-            <option value="pyin">pYIN (accurate monophonic)</option>
-            <option value="basic-pitch">Basic Pitch AI</option>
+            <option value="auto" selected>Auto (best installed)</option>
+            <option value="crepe" data-needs="crepe">CREPE neural net</option>
+            <option value="pyin">pYIN (no GPU)</option>
+            <option value="basic-pitch">Basic Pitch neural net</option>
           </select>
         </label>
         <label>Note sensitivity <output id="onset_out">0.50</output>
@@ -81,6 +92,7 @@
       <div>
         <h2 id="title"></h2>
         <div class="meta" id="meta"></div>
+        <div class="meta engines" id="engines"></div>
       </div>
       <a id="dl-all" class="button" download>Download MIDI</a>
     </div>
@@ -94,11 +106,18 @@
 
     <div class="roll-wrap"><canvas id="roll"></canvas></div>
     <ul id="tracks" class="tracks"></ul>
+    <div id="stems" class="stems" hidden>
+      <span class="meta">Separated audio stems:</span>
+      <span id="stem-links"></span>
+    </div>
   </section>
 
   <footer>
-    Pitch transcription by <a href="https://github.com/spotify/basic-pitch">Spotify Basic Pitch</a>,
-    optional stem separation by <a href="https://github.com/facebookresearch/demucs">Demucs</a>.
+    Stem separation by <a href="https://github.com/facebookresearch/demucs">Demucs</a>
+    (via <a href="https://github.com/nomadkaraoke/python-audio-separator">audio-separator</a>),
+    drums by <a href="https://github.com/MZehren/ADTOF">ADTOF</a>,
+    bass by <a href="https://github.com/maxrmorrison/torchcrepe">CREPE</a>,
+    synths by <a href="https://github.com/spotify/basic-pitch">Spotify Basic Pitch</a>.
   </footer>
 </main>
 <audio id="audio" preload="auto"></audio>

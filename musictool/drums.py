@@ -42,6 +42,8 @@ def transcribe_drums(y: np.ndarray, sr: int, sensitivity: float = 0.5) -> list[N
     """
     if np.max(np.abs(y)) < 1e-4:
         return []
+    if sr != 22050:  # band edges and thresholds are tuned at 22.05 kHz
+        y, sr = librosa.resample(y, orig_sr=sr, target_sr=22050), 22050
 
     S = np.abs(librosa.stft(y, n_fft=N_FFT, hop_length=HOP))
     freqs = librosa.fft_frequencies(sr=sr, n_fft=N_FFT)
@@ -89,3 +91,84 @@ def _decay_time(energy: np.ndarray, frame: int, hop_s: float) -> float:
     below = np.nonzero(seg[peak_idx:] < 0.25 * peak)[0]
     n = below[0] if below.size else seg.size - peak_idx
     return n * hop_s
+
+
+# --- Neural drum transcription (ADTOF) ---------------------------------------
+
+# ADTOF classes (its GM output pitches) -> the GM notes we write.
+ADTOF_CLASSES = [(35, KICK), (38, SNARE), (47, 47), (42, CLOSED_HAT), (49, 49)]  # kick, snare, toms, hats, cymbals
+ADTOF_SR = 44100
+ADTOF_FPS = 100
+# ADTOF's thresholds were tuned on mostly acoustic kits. Clickless 808/909-style
+# sine kicks only reach ~0.15-0.2 kick activation, so we lower the kick threshold
+# (0.22 -> 0.14). On a 909-ish kick this adds no false hits; on a pure sine kick it
+# lifts kick F1 from 0.72 to 0.97 (bench/ + tests/synth.py).
+ADTOF_THRESHOLD_SCALE = [0.65, 1.0, 1.0, 1.0, 1.0]
+
+_adtof = None
+
+
+def adtof_available() -> bool:
+    try:
+        import adtof_pytorch  # noqa: F401
+        import torch  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _load_adtof():
+    global _adtof
+    if _adtof is None:
+        import contextlib
+        import io
+
+        import torch
+        from adtof_pytorch import calculate_n_bins, create_frame_rnn_model, get_default_weights_path, load_pytorch_weights
+        from adtof_pytorch.audio import create_adtof_processor
+
+        from .gpu import device
+
+        model = create_frame_rnn_model(calculate_n_bins())
+        with contextlib.redirect_stdout(io.StringIO()):
+            model = load_pytorch_weights(model, get_default_weights_path(), strict=False)
+        model.eval().to(device())
+        _adtof = (model, create_adtof_processor(), torch)
+    return _adtof
+
+
+def transcribe_drums_adtof(y: np.ndarray, sr: int, sensitivity: float = 0.5) -> list[Note]:
+    """Drum transcription with the ADTOF Frame-RNN (Zehren et al.), a CNN + bi-GRU
+    trained on ~114 h of real, crowd-annotated music.
+
+    Writes kick, snare, toms, closed hi-hat and cymbal; velocity follows the
+    network's confidence.
+    """
+    if np.max(np.abs(y)) < 1e-4:
+        return []
+    from adtof_pytorch import FRAME_RNN_THRESHOLDS, PeakPicker
+
+    from .gpu import device
+
+    model, processor, torch = _load_adtof()
+    if sr != ADTOF_SR:
+        y = librosa.resample(y, orig_sr=sr, target_sr=ADTOF_SR)
+    spec = processor.apply_filterbank(processor.compute_stft(y.astype(np.float32))).T[None, :, :, None]
+    with torch.no_grad():
+        act = model(torch.from_numpy(np.ascontiguousarray(spec)).float().to(device())).cpu().numpy()[0]
+
+    # sensitivity 0.5 = the paper's tuned thresholds; 0 = x1.6 stricter, 1 = x0.5 looser
+    scale = float(np.interp(sensitivity, [0.0, 0.5, 1.0], [1.6, 1.0, 0.5]))
+    thresholds = [min(0.95, t * c * scale) for t, c in zip(FRAME_RNN_THRESHOLDS, ADTOF_THRESHOLD_SCALE)]
+    picker = PeakPicker(thresholds=thresholds, fps=ADTOF_FPS)
+    peaks = picker.pick(act, labels=[c for c, _ in ADTOF_CLASSES])[0]
+
+    notes = []
+    for i, (cls, pitch) in enumerate(ADTOF_CLASSES):
+        for t in peaks[cls]:
+            frame = min(act.shape[0] - 1, int(round(t * ADTOF_FPS)))
+            conf = float(act[max(0, frame - 1) : frame + 2, i].max())
+            velocity = int(np.clip(35 + 92 * conf, 1, 127))
+            notes.append(Note(float(t), float(t) + 0.1, pitch, velocity))
+    notes.sort(key=lambda n: (n.start, n.pitch))
+    return notes

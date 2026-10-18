@@ -8,15 +8,18 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from ..pipeline import TranscriptionOptions, TranscriptionResult, transcribe
-from ..separation import demucs_available
+from ..drums import adtof_available
+from ..gpu import device
+from ..pipeline import TranscriptionOptions, TranscriptionResult, resolve_engines, transcribe
+from ..pitch import crepe_available
+from ..separation import NEURAL_MODELS, neural_available
 
 STATIC_DIR = Path(__file__).parent / "static"
 ALLOWED_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".aif", ".aiff", ".m4a"}
@@ -68,13 +71,22 @@ def _run(job: Job, audio_path: Path, options: TranscriptionOptions) -> None:
 
 @app.get("/api/info")
 def info() -> dict:
-    return {"demucs": demucs_available()}
+    return {
+        "neural_separation": neural_available(),
+        "separation_models": {k: label for k, (_, label) in NEURAL_MODELS.items()},
+        "adtof": adtof_available(),
+        "crepe": crepe_available(),
+        "gpu": device() == "cuda",
+        "defaults": asdict(resolve_engines(TranscriptionOptions())),
+    }
 
 
 @app.post("/api/transcribe")
 async def create_job(
     file: UploadFile = File(...),
-    separation: str = Form("hpss"),
+    separation: str = Form("auto"),
+    drum_engine: str = Form("auto"),
+    mono_engine: str = Form("auto"),
     bpm: float | None = Form(None),
     quantize: int = Form(16),
     drums: bool = Form(True),
@@ -84,18 +96,23 @@ async def create_job(
     frame_threshold: float = Form(0.3),
     min_note_ms: float = Form(80.0),
     drum_sensitivity: float = Form(0.5),
-    mono_engine: str = Form("pyin"),
 ) -> dict:
     _cleanup_old_jobs()
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in ALLOWED_EXTENSIONS:
         raise HTTPException(400, f"Unsupported file type '{suffix}'. Use one of: {', '.join(sorted(ALLOWED_EXTENSIONS))}")
-    if separation not in ("hpss", "demucs"):
-        raise HTTPException(400, "separation must be 'hpss' or 'demucs'")
-    if separation == "demucs" and not demucs_available():
-        raise HTTPException(400, "Demucs is not installed on the server (pip install demucs)")
-    if mono_engine not in ("pyin", "basic-pitch"):
-        raise HTTPException(400, "mono_engine must be 'pyin' or 'basic-pitch'")
+    if separation not in ("auto", "hpss", *NEURAL_MODELS):
+        raise HTTPException(400, f"separation must be one of: auto, hpss, {', '.join(NEURAL_MODELS)}")
+    if separation in NEURAL_MODELS and not neural_available():
+        raise HTTPException(400, "Neural separation is not installed on the server (run install.bat with GPU support)")
+    if drum_engine not in ("auto", "adtof", "dsp"):
+        raise HTTPException(400, "drum_engine must be 'auto', 'adtof' or 'dsp'")
+    if drum_engine == "adtof" and not adtof_available():
+        raise HTTPException(400, "ADTOF is not installed on the server")
+    if mono_engine not in ("auto", "crepe", "pyin", "basic-pitch"):
+        raise HTTPException(400, "mono_engine must be 'auto', 'crepe', 'pyin' or 'basic-pitch'")
+    if mono_engine == "crepe" and not crepe_available():
+        raise HTTPException(400, "CREPE is not installed on the server")
 
     job_id = uuid.uuid4().hex
     workdir = Path(tempfile.mkdtemp(prefix=f"musictool-{job_id[:8]}-"))
@@ -120,7 +137,9 @@ async def create_job(
         frame_threshold=frame_threshold,
         min_note_ms=min_note_ms,
         drum_sensitivity=drum_sensitivity,
+        drum_engine=drum_engine,
         mono_engine=mono_engine,
+        stems_dir=workdir / "stems",
     )
     safe_name = re.sub(r"[^\w\-. ]", "_", Path(file.filename).stem)[:100] or "transcription"
     job = Job(id=job_id, filename=safe_name, workdir=workdir)
@@ -150,7 +169,17 @@ def job_status(job_id: str) -> dict:
     }
     if job.result is not None:
         body["result"] = job.result.to_dict()
+        body["stems"] = sorted(p.stem.split("_", 1)[1] for p in (job.workdir / "stems").glob("*.wav"))
     return body
+
+
+@app.get("/api/jobs/{job_id}/stems/{stem}")
+def download_stem(job_id: str, stem: str) -> FileResponse:
+    job = _get_job(job_id)
+    path = job.workdir / "stems" / f"input_{stem}.wav"
+    if not re.fullmatch(r"[a-z]+", stem) or not path.exists():
+        raise HTTPException(404, f"No stem named {stem!r}")
+    return FileResponse(path, media_type="audio/wav", filename=f"{job.filename}_{stem}.wav")
 
 
 @app.get("/api/jobs/{job_id}/midi")

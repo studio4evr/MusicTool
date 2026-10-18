@@ -27,7 +27,7 @@ jobs:
         run: |
           python -m venv .venv
           .venv/bin/python -m pip install --no-deps basic-pitch
-          .venv/bin/python -m pip install -e . resampy mir_eval scikit-learn
+          .venv/bin/python -m pip install -e ".[cpu]" resampy mir_eval scikit-learn
 
       - name: Test (Windows)
         if: runner.os == 'Windows'

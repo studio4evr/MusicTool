@@ -14,15 +14,27 @@ dependencies = [
     "librosa>=0.10",
     "soundfile",
     "pretty_midi",
-    "onnxruntime",
     "fastapi",
     "uvicorn",
     "python-multipart",
 ]
 
+# Pick exactly one of cpu / gpu: onnxruntime and onnxruntime-gpu overwrite each other.
+# For gpu, install PyTorch from https://download.pytorch.org/whl/cu128 first (install.bat does this).
 [project.optional-dependencies]
-stems = ["demucs"]
+cpu = ["onnxruntime"]
+gpu = [
+    "onnxruntime-gpu",
+    "audio-separator[gpu]>=0.47",
+    "audioread",  # audio-separator imports it; librosa 1.0 no longer pulls it in
+    "torchcrepe",
+    # pinned commit, as a zip so git isn't required
+    "adtof-pytorch @ https://github.com/xavriley/ADTOF-pytorch/archive/85c192e78f716ea0b111cc8a5ee4a8f6a3a4f8a9.zip",
+]
 dev = ["pytest", "httpx"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [project.scripts]
 musictool = "musictool.cli:main"

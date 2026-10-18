@@ -1,28 +1,67 @@
-"""Split a mix into drums / bass / melodic parts before transcription.
+"""Split a mix into drums / bass / melodic (/ vocal) parts before transcription.
 
-Two methods are available:
+* ``hpss`` - fast, dependency-free harmonic/percussive separation (median
+             filtering) plus a low/high band split. Stems leak into each other.
+* neural   - Meta's Hybrid Transformer Demucs v4, run through ``audio-separator``
+             (PyTorch, uses an NVIDIA GPU when present). Far cleaner stems; the
+             model is downloaded on first use.
 
-* ``hpss``   - fast, dependency-free harmonic/percussive source separation
-               (median filtering) followed by a low/high band split.
-* ``demucs`` - Meta's Hybrid Transformer Demucs neural stem separator.
-               Much cleaner stems, but requires ``pip install demucs`` (PyTorch).
+``separate`` returns ``(stems, sample_rate)``. Stem keys: ``drums``, ``bass``,
+``melodic`` and, for neural models, ``vocals``.
 """
+
+import contextlib
+import io
+import logging
+import os
+import tempfile
+from pathlib import Path
 
 import numpy as np
 import librosa
 
 from .audio import lowpass, highpass
 
+os.environ.setdefault("TQDM_DISABLE", "1")  # audio-separator's download/progress bars
+
 BASS_CUTOFF_HZ = 200.0
+NEURAL_SR = 44100
+
+# key -> (audio-separator model file, label). Best first; SDR from the model registry.
+NEURAL_MODELS = {
+    "demucs-ft": ("htdemucs_ft.yaml", "Demucs v4 fine-tuned"),  # drums 10.0 dB, bass 12.0 dB, 4x slower
+    "demucs": ("htdemucs.yaml", "Demucs v4"),  # drums 9.4 dB, bass 11.6 dB
+}
+
+STEM_NAMES = {"Drums": "drums", "Bass": "bass", "Other": "melodic", "Vocals": "vocals"}
 
 
-def demucs_available() -> bool:
+def model_dir() -> Path:
+    base = os.environ.get("MUSICTOOL_MODEL_DIR") or Path(os.environ.get("LOCALAPPDATA", Path.home() / ".cache")) / "musictool" / "models"
+    path = Path(base)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def neural_available() -> bool:
     try:
-        import demucs  # noqa: F401
+        import audio_separator  # noqa: F401
         import torch  # noqa: F401
     except ImportError:
         return False
     return True
+
+
+def demucs_available() -> bool:  # kept for the web API / older callers
+    return neural_available()
+
+
+def best_separation() -> str:
+    return "demucs-ft" if neural_available() else "hpss"
+
+
+def separation_label(method: str) -> str:
+    return NEURAL_MODELS[method][1] if method in NEURAL_MODELS else "harmonic/percussive DSP"
 
 
 def separate_hpss(y: np.ndarray, sr: int) -> dict[str, np.ndarray]:
@@ -34,47 +73,59 @@ def separate_hpss(y: np.ndarray, sr: int) -> dict[str, np.ndarray]:
     }
 
 
-_demucs_model = None
+_separators: dict[str, object] = {}
 
 
-def separate_demucs(path, sr: int) -> dict[str, np.ndarray]:
-    import torch
-    from demucs.apply import apply_model
-    from demucs.pretrained import get_model
+def _separator(model_file: str, output_dir: str):
+    """Load each model once per process; only the output folder changes per call."""
+    sep = _separators.get(model_file)
+    if sep is None:
+        from audio_separator.separator import Separator
 
-    global _demucs_model
-    if _demucs_model is None:
-        _demucs_model = get_model("htdemucs")
-        _demucs_model.eval()
-    model = _demucs_model
+        with contextlib.redirect_stdout(io.StringIO()):
+            sep = Separator(
+                log_level=logging.WARNING,
+                model_file_dir=str(model_dir()),
+                output_dir=output_dir,
+                output_format="WAV",
+                sample_rate=NEURAL_SR,
+                # shifts=1: one pass instead of two; ~2x faster for ~0.1 dB SDR
+                demucs_params={"segment_size": "Default", "shifts": 1, "overlap": 0.25, "segments_enabled": True},
+            )
+            sep.load_model(model_filename=model_file)
+        _separators[model_file] = sep
+    sep.output_dir = output_dir
+    if getattr(sep, "model_instance", None) is not None:
+        sep.model_instance.output_dir = output_dir
+    return sep
 
-    wav, _ = librosa.load(str(path), sr=model.samplerate, mono=False)
-    if wav.ndim == 1:
-        wav = np.stack([wav, wav])
-    wav = wav[: model.audio_channels]
-    ref = wav.mean(0)
-    mean, std = ref.mean(), ref.std() + 1e-8
-    tensor = torch.from_numpy((wav - mean) / std).float()[None]
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    with torch.no_grad():
-        sources = apply_model(model, tensor, device=device, split=True, overlap=0.25)[0]
-    sources = sources.cpu().numpy() * std + mean
-
-    stems = {}
-    for name, source in zip(model.sources, sources):
-        mono = librosa.resample(source.mean(0), orig_sr=model.samplerate, target_sr=sr)
-        stems["melodic" if name == "other" else name] = mono.astype(np.float32)
+def separate_neural(path, method: str) -> dict[str, np.ndarray]:
+    model_file, _ = NEURAL_MODELS[method]
+    with tempfile.TemporaryDirectory(prefix="musictool-stems-") as out:
+        sep = _separator(model_file, out)
+        with contextlib.redirect_stdout(io.StringIO()):
+            files = sep.separate(str(path), custom_output_names={k: k.lower() for k in STEM_NAMES})
+        stems = {}
+        for f in files:
+            f = Path(f) if Path(f).is_absolute() else Path(out) / f
+            key = STEM_NAMES.get(f.stem.capitalize())
+            if key:
+                audio, _ = librosa.load(str(f), sr=NEURAL_SR, mono=True)
+                stems[key] = audio.astype(np.float32)
+    missing = {"drums", "bass", "melodic"} - stems.keys()
+    if missing:
+        raise RuntimeError(f"Stem separation did not produce: {', '.join(sorted(missing))}")
     return stems
 
 
-def separate(y: np.ndarray, sr: int, method: str = "hpss", path=None) -> dict[str, np.ndarray]:
+def separate(y: np.ndarray, sr: int, method: str = "hpss", path=None) -> tuple[dict[str, np.ndarray], int]:
     if method == "hpss":
-        return separate_hpss(y, sr)
-    if method == "demucs":
-        if not demucs_available():
-            raise RuntimeError("Demucs is not installed. Run: pip install demucs")
+        return separate_hpss(y, sr), sr
+    if method in NEURAL_MODELS:
+        if not neural_available():
+            raise RuntimeError("Neural separation needs PyTorch + audio-separator (run install.bat and choose GPU)")
         if path is None:
-            raise ValueError("Demucs separation needs the source file path")
-        return separate_demucs(path, sr)
+            raise ValueError("Neural separation needs the source file path")
+        return separate_neural(path, method), NEURAL_SR
     raise ValueError(f"Unknown separation method: {method}")

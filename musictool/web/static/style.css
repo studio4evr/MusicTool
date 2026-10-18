@@ -70,3 +70,6 @@ canvas { display: block; cursor: pointer; }
 .tracks .count { color: var(--muted); flex: 1; }
 .tracks a { font-size: 13px; }
 footer { font-size: 13px; margin-top: 24px; }
+.engines { font-size: 12px; }
+.stems { margin-top: 14px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center; font-size: 13px; }
+.stems #stem-links { display: inline-flex; gap: 12px; flex-wrap: wrap; }

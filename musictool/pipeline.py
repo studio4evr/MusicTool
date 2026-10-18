@@ -1,22 +1,23 @@
 """End-to-end pipeline: audio file -> separated stems -> notes -> MIDI."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
 import pretty_midi
 
 from .audio import load_audio
-from .drums import transcribe_drums
+from .drums import adtof_available, transcribe_drums, transcribe_drums_adtof
 from .notes import Note
 from .pitch import (
+    crepe_available,
     make_monophonic,
     merge_fragments,
     remove_octave_bleed,
     transcribe_monophonic,
     transcribe_pitched,
 )
-from .separation import separate
+from .separation import best_separation, separate, separation_label
 from .timing import estimate_tempo, grid_phase, grid_step, quantize
 
 ProgressFn = Callable[[str, float], None]
@@ -24,7 +25,10 @@ ProgressFn = Callable[[str, float], None]
 
 @dataclass
 class TranscriptionOptions:
-    separation: str = "hpss"  # "hpss" or "demucs"
+    # "auto" picks the best engine that is installed; see resolve_engines().
+    separation: str = "auto"  # "auto", "hpss", or a neural model key from separation.NEURAL_MODELS
+    drum_engine: str = "auto"  # "auto", "adtof" (neural) or "dsp"
+    mono_engine: str = "auto"  # bass/vocal lines: "auto", "crepe" (neural), "pyin" or "basic-pitch"
     bpm: float | None = None  # None = detect automatically
     quantize: int | None = 16  # grid division, None/0 = off
     drums: bool = True
@@ -34,7 +38,17 @@ class TranscriptionOptions:
     frame_threshold: float = 0.3  # Basic Pitch note sustain confidence
     min_note_ms: float = 80.0
     drum_sensitivity: float = 0.5
-    mono_engine: str = "pyin"  # bass/vocal line engine: "pyin" or "basic-pitch"
+    stems_dir: Path | None = None  # if set, the separated stems are written here as WAV
+
+
+def resolve_engines(opts: TranscriptionOptions) -> TranscriptionOptions:
+    """Replace every "auto" with the best engine available on this machine."""
+    return replace(
+        opts,
+        separation=best_separation() if opts.separation == "auto" else opts.separation,
+        drum_engine=("adtof" if adtof_available() else "dsp") if opts.drum_engine == "auto" else opts.drum_engine,
+        mono_engine=("crepe" if crepe_available() else "pyin") if opts.mono_engine == "auto" else opts.mono_engine,
+    )
 
 
 @dataclass
@@ -58,6 +72,7 @@ class TranscriptionResult:
     tracks: list[Track]
     bpm: float
     duration: float
+    engines: dict[str, str] = field(default_factory=dict)  # which model handled each step
 
     def to_midi(self, track_names: list[str] | None = None) -> pretty_midi.PrettyMIDI:
         pm = pretty_midi.PrettyMIDI(initial_tempo=self.bpm)
@@ -79,6 +94,7 @@ class TranscriptionResult:
         return {
             "bpm": self.bpm,
             "duration": round(self.duration, 3),
+            "engines": self.engines,
             "tracks": [t.to_dict() for t in self.tracks],
         }
 
@@ -93,36 +109,52 @@ PITCHED_STEMS = {
 
 def transcribe(path, options: TranscriptionOptions | None = None, progress: ProgressFn | None = None) -> TranscriptionResult:
     """Transcribe an audio file into a multi-track ``TranscriptionResult``."""
-    opts = options or TranscriptionOptions()
+    opts = resolve_engines(options or TranscriptionOptions())
     report = progress or (lambda stage, frac: None)
 
     report("Loading audio", 0.02)
     y, sr = load_audio(path)
     duration = len(y) / sr
 
-    report("Detecting tempo", 0.08)
+    report("Detecting tempo", 0.06)
     detected_bpm, first_beat = estimate_tempo(y, sr)
     bpm = float(opts.bpm) if opts.bpm else detected_bpm
 
-    report(f"Separating stems ({opts.separation})", 0.15)
-    stems = separate(y, sr, opts.separation, path=path)
+    neural = opts.separation != "hpss"
+    report(f"Separating stems ({separation_label(opts.separation)})", 0.1)
+    stems, stem_sr = separate(y, sr, opts.separation, path=path)
+    if opts.stems_dir:
+        import soundfile as sf
+
+        Path(opts.stems_dir).mkdir(parents=True, exist_ok=True)
+        for key, audio in stems.items():
+            sf.write(Path(opts.stems_dir) / f"{Path(path).stem}_{key}.wav", audio, stem_sr)
 
     tracks: list[Track] = []
     if opts.drums and "drums" in stems:
-        report("Transcribing drums", 0.35)
-        tracks.append(Track("Drums", 0, True, transcribe_drums(stems["drums"], sr, opts.drum_sensitivity)))
+        if opts.drum_engine == "adtof":
+            report("Transcribing drums (ADTOF neural net)", 0.45)
+            drum_notes = transcribe_drums_adtof(stems["drums"], stem_sr, opts.drum_sensitivity)
+        else:
+            report("Transcribing drums", 0.45)
+            drum_notes = transcribe_drums(stems["drums"], stem_sr, opts.drum_sensitivity)
+        tracks.append(Track("Drums", 0, True, drum_notes))
 
     wanted = [k for k in PITCHED_STEMS if k in stems and (k != "bass" or opts.bass) and (k == "bass" or opts.melodic)]
     for i, key in enumerate(wanted):
         name, program, (fmin, fmax), mono = PITCHED_STEMS[key]
-        if mono and opts.mono_engine == "pyin":
-            report(f"Transcribing {name.lower()} (pYIN)", 0.45 + 0.5 * i / len(wanted))
-            notes = transcribe_monophonic(stems[key], sr, min_freq=fmin, max_freq=fmax, min_note_ms=opts.min_note_ms)
+        frac = 0.55 + 0.4 * i / len(wanted)
+        if mono and opts.mono_engine in ("pyin", "crepe"):
+            label = "CREPE neural net" if opts.mono_engine == "crepe" else "pYIN"
+            report(f"Transcribing {name.lower()} ({label})", frac)
+            notes = transcribe_monophonic(
+                stems[key], stem_sr, min_freq=fmin, max_freq=fmax, min_note_ms=opts.min_note_ms, engine=opts.mono_engine
+            )
         else:
-            report(f"Transcribing {name.lower()} (Basic Pitch AI)", 0.45 + 0.5 * i / len(wanted))
+            report(f"Transcribing {name.lower()} (Basic Pitch neural net)", frac)
             notes = transcribe_pitched(
                 stems[key],
-                sr,
+                stem_sr,
                 onset_threshold=opts.onset_threshold,
                 frame_threshold=opts.frame_threshold,
                 min_note_ms=opts.min_note_ms,
@@ -135,7 +167,7 @@ def transcribe(path, options: TranscriptionOptions | None = None, progress: Prog
         tracks.append(Track(name, program, False, notes))
 
     bass_track = next((t for t in tracks if t.name == "Bass"), None)
-    if bass_track is not None and opts.separation == "hpss":
+    if bass_track is not None and not neural:  # neural stems don't leak bass harmonics
         for track in tracks:
             if track.name == "Synths":
                 track.notes = remove_octave_bleed(track.notes, bass_track.notes)
@@ -152,4 +184,5 @@ def transcribe(path, options: TranscriptionOptions | None = None, progress: Prog
                 track.notes = make_monophonic(track.notes)
 
     report("Done", 1.0)
-    return TranscriptionResult(tracks=tracks, bpm=bpm, duration=duration)
+    engines = {"separation": opts.separation, "drums": opts.drum_engine, "bass": opts.mono_engine, "synths": "basic-pitch"}
+    return TranscriptionResult(tracks=tracks, bpm=bpm, duration=duration, engines=engines)

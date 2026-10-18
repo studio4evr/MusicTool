@@ -2,6 +2,7 @@ import pretty_midi
 import pytest
 
 import synth
+from conftest import DSP
 from musictool import Note, TranscriptionOptions, transcribe
 from musictool.pitch import make_monophonic, merge_fragments, remove_octave_bleed
 from musictool.timing import estimate_tempo, grid_phase, quantize
@@ -58,7 +59,7 @@ def test_synth_chords(result, track):
 
 
 def test_quantised_output_is_on_grid(track):
-    res = transcribe(track[0], TranscriptionOptions(quantize=16, melodic=False))
+    res = transcribe(track[0], TranscriptionOptions(quantize=16, melodic=False, **DSP))
     step = 60 / res.bpm / 4
     starts = [n.start for t in res.tracks for n in t.notes]
     phase = grid_phase(starts, step)
@@ -78,7 +79,7 @@ def test_midi_file(result, tmp_path):
 
 
 def test_track_toggles(track):
-    res = transcribe(track[0], TranscriptionOptions(drums=False, melodic=False))
+    res = transcribe(track[0], TranscriptionOptions(drums=False, melodic=False, **DSP))
     assert [t.name for t in res.tracks] == ["Bass"]
 
 
@@ -88,7 +89,7 @@ def test_silence(tmp_path):
 
     path = tmp_path / "silence.wav"
     sf.write(path, np.zeros(22050 * 2, dtype=np.float32), 22050)
-    res = transcribe(path)
+    res = transcribe(path, TranscriptionOptions(**DSP))
     assert all(not t.notes for t in res.tracks)
 
 

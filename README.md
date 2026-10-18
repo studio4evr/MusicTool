@@ -9,23 +9,42 @@ ready to drag into Ableton, FL Studio, Logic, Bitwig, and so on.
 
 ## How it works
 
-| Stage | Method |
-|---|---|
-| Stem separation | Harmonic/percussive separation + band split (fast, default), or **Demucs** neural stem separation (optional, best quality) |
-| Synths / chords | **Spotify Basic Pitch**, a neural polyphonic transcription model, run via ONNX Runtime (no TensorFlow needed) |
-| Bass (and vocals with Demucs) | **pYIN** probabilistic f0 tracking (default; more accurate on low monophonic bass), or Basic Pitch |
-| Drums | Multi-band transient detection → kick / snare / closed hat / open hat (GM drum map 36/38/42/46) |
-| Tempo | Beat tracking + least-squares fit of the beat grid |
-| Quantisation | Grid phase is estimated from the drum hits, then notes snap to 1/8, 1/16 or 1/32 |
-| Clean-up | Fragmented sustained notes are merged, and octave bleed from the bass is removed from the synth track |
+With an NVIDIA GPU, every stage uses a neural network. Without one, MusicTool
+falls back to fast CPU methods. **Auto**, the default, picks the best engine that is installed.
+
+| Stage | GPU engine (default with NVIDIA) | CPU fallback |
+|---|---|---|
+| Stem separation | **Demucs v4 fine-tuned** (Meta), giving drums / bass / other / vocals stems | Harmonic/percussive separation + band split |
+| Drums | **ADTOF** (CNN + bi-GRU trained on 114 h of real music), detecting kick, snare, toms, hi-hat and cymbal, with velocity from the network's confidence | Multi-band transient classifier |
+| Bass and vocal lines | **CREPE** (CNN pitch tracker) | pYIN |
+| Synths / chords | **Spotify Basic Pitch** (polyphonic CNN, run via ONNX) | the same |
+| Tempo | Beat tracking, then a beat-grid fit that also corrects 2:3 and 2:1 tempo errors | the same |
+| Quantisation | Grid phase is taken from the drum hits; notes snap to 1/8, 1/16 or 1/32 | the same |
+
+### Accuracy
+
+`python bench/benchmark.py` renders a 30 s track with exactly known notes. It has a 909-style kick, snare
+rolls, 16th-note and open hats, an acid bass with filter sweeps and glides, sidechained supersaw chords,
+a delayed arpeggio lead, reverb and saturation. Each engine combination is then scored (mir_eval F1,
+50 ms onset tolerance; 1.0 is perfect):
+
+| Engines | kick | snare | hi-hat | bass | synths | mean |
+|---|---|---|---|---|---|---|
+| CPU fallback (DSP / DSP / pYIN) | 0.95 | 0.65 | 0.43 | 0.28 | 0.03 | 0.47 |
+| Demucs + ADTOF + CREPE (GPU default) | 0.99 | 0.92 | 0.93 | 0.68 | 0.31 | **0.77** |
+
+The synth track is still the weakest part: sidechain pumping and delay echoes confuse note onsets.
+A 5-minute track takes about 90 s on an RTX 2070 Super. The stem-separation model (~300 MB)
+downloads on first use to `%LOCALAPPDATA%\musictool\models`.
 
 ## Windows quick start
 
 1. Install **Python 3.12** from <https://www.python.org/downloads/windows/>.
    In the installer, tick **"Add python.exe to PATH"**.
 2. Download this repository (green **Code** button → **Download ZIP**) and unzip it.
-3. Double-click **`install.bat`**. It sets everything up in a `.venv` folder,
-   which takes a few minutes the first time.
+3. Double-click **`install.bat`**. It sets everything up in a `.venv` folder.
+   If it finds an NVIDIA GPU, it also installs PyTorch with CUDA and the neural models,
+   a download of about 3.5 GB. Set `MUSICTOOL_CPU=1` beforehand to skip them.
 4. Double-click **`start.bat`**. MusicTool opens in your browser. Close the
    black window, or press Ctrl+C in it, to stop the app.
 
@@ -42,12 +61,18 @@ Requires Python 3.10+.
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install --no-deps basic-pitch   # only its ONNX model is needed; avoids TensorFlow pins
-pip install -e .
 pip install resampy mir_eval scikit-learn   # used by basic-pitch's inference code
 
-# optional: neural stem separation (installs PyTorch, large download)
-pip install demucs
+# CPU only:
+pip install -e ".[cpu]"
+
+# or with an NVIDIA GPU: install CUDA PyTorch first, then pin it so nothing swaps in the CPU build
+pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
+python -c "import torch, torchaudio; print(f'torch=={torch.__version__}\ntorchaudio=={torchaudio.__version__}')" > constraints.txt
+pip install -e ".[gpu]" -c constraints.txt --extra-index-url https://download.pytorch.org/whl/cu128
 ```
+
+Pick one of `cpu` or `gpu`: `onnxruntime` and `onnxruntime-gpu` overwrite each other.
 
 ## Use it
 
@@ -66,7 +91,9 @@ original audio if you like), and download the full MIDI or individual tracks.
 ```bash
 musictool track.mp3                       # writes track.mid
 musictool track.wav -o out.mid --separate-tracks   # also out_drums.mid, out_bass.mid, ...
+musictool track.wav --save-stems          # also writes the separated stems as .wav
 musictool track.wav --separation demucs --quantize 32 --bpm 174
+musictool track.wav --separation hpss --drum-engine dsp --mono-engine pyin   # CPU engines
 musictool --help
 ```
 
@@ -82,10 +109,11 @@ result.write("track.mid")
 
 ## Tips
 
-* Use `--separation demucs` on dense, full mixes. It gives far cleaner bass and synth parts.
-* There's too much noise in the synth track? Lower the *Note sensitivity* or raise `--onset-threshold`.
-* Hats or percussion are missing? Raise *Drum sensitivity*.
-* The tempo detection fold assumes 85–180 BPM. For drum & bass or halftime, set `--bpm` explicitly.
+* Is there too much noise in the synth track? Lower the *Note sensitivity* or raise `--onset-threshold`.
+* Are hats or percussion missing? Raise *Drum sensitivity*.
+* Tempo is read in the 85–180 BPM range. Drum & bass often comes out half-time (87 instead of 174),
+  so set `--bpm` explicitly for it.
+* The **Separated audio stems** links in the web app, or `--save-stems`, give you the Demucs stems to use in your DAW.
 
 ## Tests
 
@@ -96,4 +124,5 @@ pytest
 
 The tests render a synthetic electronic track with known kick, snare, hat,
 bass and chord notes. They check tempo, per-instrument accuracy, the MIDI
-output, the CLI and the web API.
+output, the CLI and the web API. `tests/test_neural.py` covers the GPU engines
+and is skipped when they aren't installed.

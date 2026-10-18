@@ -8,7 +8,8 @@ from musictool.cli import main
 
 def test_cli(track, tmp_path, capsys):
     out = tmp_path / "song.mid"
-    assert main([str(track[0]), "-o", str(out), "--separate-tracks", "--no-melodic"]) == 0
+    dsp = ["--separation", "hpss", "--drum-engine", "dsp", "--mono-engine", "pyin"]
+    assert main([str(track[0]), "-o", str(out), "--separate-tracks", "--no-melodic", *dsp]) == 0
     assert out.exists()
     assert (tmp_path / "song_drums.mid").exists()
     assert (tmp_path / "song_bass.mid").exists()
@@ -35,7 +36,7 @@ def test_web_roundtrip(client, track):
         res = client.post(
             "/api/transcribe",
             files={"file": ("my song.wav", fh, "audio/wav")},
-            data={"melodic": "false", "quantize": "16"},
+            data={"melodic": "false", "quantize": "16", "separation": "hpss", "drum_engine": "dsp", "mono_engine": "pyin"},
         )
     assert res.status_code == 200, res.text
     job_id = res.json()["id"]

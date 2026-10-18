@@ -3,6 +3,8 @@
 const $ = (id) => document.getElementById(id);
 const COLORS = { Drums: "--drums", Bass: "--bass", Synths: "--synths", Vocals: "--vocals" };
 const DRUM_ROWS = [
+  { pitch: 49, label: "Cymbal" },
+  { pitch: 47, label: "Toms" },
   { pitch: 46, label: "Open hat" },
   { pitch: 42, label: "Hi-hat" },
   { pitch: 38, label: "Snare" },
@@ -36,11 +38,25 @@ function pickFile(file) {
 $("onset_threshold").addEventListener("input", (e) => ($("onset_out").textContent = Number(e.target.value).toFixed(2)));
 $("drum_sensitivity").addEventListener("input", (e) => ($("drum_out").textContent = Number(e.target.value).toFixed(2)));
 
+const ENGINE_LABELS = {
+  "demucs-ft": "Demucs v4 fine-tuned", demucs: "Demucs v4", hpss: "DSP separation",
+  adtof: "ADTOF drums", dsp: "DSP drums", crepe: "CREPE bass", pyin: "pYIN bass",
+  "basic-pitch": "Basic Pitch",
+};
+
 fetch("/api/info").then((r) => r.json()).then((info) => {
-  if (!info.demucs) {
-    const opt = document.querySelector('#separation option[value="demucs"]');
-    opt.disabled = true;
-    opt.textContent += " – not installed";
+  // Grey out engines this machine doesn't have, and say what "Auto" resolves to.
+  for (const opt of document.querySelectorAll("option[data-needs]")) {
+    if (!info[opt.dataset.needs]) {
+      opt.disabled = true;
+      opt.textContent += " – not installed";
+    }
+  }
+  const d = info.defaults;
+  const auto = { separation: d.separation, drum_engine: d.drum_engine, mono_engine: d.mono_engine };
+  for (const [id, value] of Object.entries(auto)) {
+    const opt = document.querySelector(`#${id} option[value="auto"]`);
+    opt.textContent = `Auto: ${ENGINE_LABELS[value] || value}${info.gpu ? "" : " (CPU)"}`;
   }
 });
 
@@ -53,7 +69,7 @@ $("go").addEventListener("click", async () => {
 
   const form = new FormData();
   form.append("file", selectedFile);
-  for (const id of ["separation", "quantize", "min_note_ms", "drum_sensitivity", "mono_engine"]) {
+  for (const id of ["separation", "drum_engine", "mono_engine", "quantize", "min_note_ms", "drum_sensitivity"]) {
     form.append(id, $(id).value);
   }
   // The slider is "sensitivity"; Basic Pitch wants a confidence threshold.
@@ -112,6 +128,18 @@ function showResult(job) {
   $("title").textContent = job.filename;
   $("meta").textContent = `${result.bpm.toFixed(1)} BPM · ${fmtTime(result.duration)} · ${total} notes`;
   $("dl-all").href = `/api/jobs/${jobId}/midi`;
+  $("engines").textContent = Object.values(result.engines || {}).map((e) => ENGINE_LABELS[e] || e).join(" · ");
+
+  const stemLinks = $("stem-links");
+  stemLinks.innerHTML = "";
+  for (const stem of job.stems || []) {
+    const a = document.createElement("a");
+    a.href = `/api/jobs/${jobId}/stems/${stem}`;
+    a.download = "";
+    a.textContent = stem;
+    stemLinks.appendChild(a);
+  }
+  $("stems").hidden = !(job.stems || []).length;
 
   const list = $("tracks");
   list.innerHTML = "";
@@ -337,6 +365,10 @@ function voice(n, t) {
       o.stop(t + 0.5);
     } else if (n.pitch === 38) {
       noise(t, 0.18, "bandpass", 1800, vel * 0.7);
+    } else if (n.pitch === 47) {
+      noise(t, 0.25, "lowpass", 400, vel * 0.8);
+    } else if (n.pitch === 49) {
+      noise(t, 1.2, "highpass", 5000, vel * 0.3);
     } else {
       noise(t, n.pitch === 46 ? 0.3 : 0.05, "highpass", 7000, vel * 0.35);
     }

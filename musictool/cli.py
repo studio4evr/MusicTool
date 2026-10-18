@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from .pipeline import TranscriptionOptions, transcribe
+from .separation import NEURAL_MODELS
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -21,8 +22,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("input", nargs="?", help="audio file (wav, mp3, flac, ogg, aiff, ...)")
     parser.add_argument("-o", "--output", help="output .mid path (default: next to input)")
     parser.add_argument("--separate-tracks", action="store_true", help="also write one .mid per track")
-    parser.add_argument("--separation", choices=["hpss", "demucs"], default="hpss",
-                        help="stem separation: fast DSP (hpss) or neural Demucs (needs `pip install demucs`)")
+    parser.add_argument("--save-stems", action="store_true", help="also write the separated audio stems as .wav")
+    parser.add_argument("--separation", choices=["auto", "hpss", *NEURAL_MODELS], default="auto",
+                        help="stem separation: auto (best installed), fast DSP (hpss) or a neural model")
+    parser.add_argument("--drum-engine", choices=["auto", "adtof", "dsp"], default="auto",
+                        help="drums: ADTOF neural net or the DSP onset classifier")
     parser.add_argument("--bpm", type=float, help="override detected tempo")
     parser.add_argument("--quantize", type=int, default=16, help="grid division, e.g. 16 for 16ths; 0 disables")
     parser.add_argument("--no-drums", action="store_true")
@@ -31,7 +35,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--onset-threshold", type=float, default=0.5, help="0-1, higher = fewer notes")
     parser.add_argument("--frame-threshold", type=float, default=0.3, help="0-1, higher = shorter notes")
     parser.add_argument("--min-note-ms", type=float, default=80.0)
-    parser.add_argument("--mono-engine", choices=["pyin", "basic-pitch"], default="pyin",
+    parser.add_argument("--mono-engine", choices=["auto", "crepe", "pyin", "basic-pitch"], default="auto",
                         help="engine for monophonic bass/vocal lines")
     parser.add_argument("--drum-sensitivity", type=float, default=0.5, help="0-1, higher = more drum hits")
 
@@ -72,7 +76,9 @@ def main(argv: list[str] | None = None) -> int:
         frame_threshold=args.frame_threshold,
         min_note_ms=args.min_note_ms,
         drum_sensitivity=args.drum_sensitivity,
+        drum_engine=args.drum_engine,
         mono_engine=args.mono_engine,
+        stems_dir=out.parent if args.save_stems else None,
     )
 
     def progress(stage: str, frac: float) -> None:
@@ -81,6 +87,7 @@ def main(argv: list[str] | None = None) -> int:
     result = transcribe(src, options, progress)
     result.write(out)
     print(f"Tempo: {result.bpm:.1f} BPM")
+    print("Engines: " + ", ".join(f"{k}={v}" for k, v in result.engines.items()))
     for track in result.tracks:
         print(f"  {track.name:<8} {len(track.notes):5d} notes")
     print(f"Wrote {out}")
